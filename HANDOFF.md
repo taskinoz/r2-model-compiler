@@ -16,11 +16,11 @@ for exact evidence and limitations.
 
 - Both CTest groups pass, including ten Python regression tests.
 - All 602 retail mp_common models decompile and compile successfully.
-- The packaged release compiler recompiled all 602 cached QC/SMD exports:
-  593 match the compared fields, with no compile failures or exceptions.
-- Five models have sampled position differences of 0.27–0.92 inches from
-  re-quantization. Four gain optional map-collision blocks. All nine are listed
-  in VALIDATION.md; no comparison threshold was loosened to hide them.
+- Fresh full run with the release build and the stricter comparison (per-piece
+  collision counts, bone collision references, frame movement applied): 564/602
+  match, with no compile failures or exceptions. Seven models are 0.28-0.92 inches
+  off in sampled animation positions; 31 differ by 1-3 hull faces/edges/verts in a
+  piece. All are listed in VALIDATION.md; no threshold was loosened.
 - All six Blender exports (SMD, binary DMX 2/3/4/5/9) compare cleanly. Text
   keyvalues2 also matches its binary fixture.
 - In game: physics box falls 100.719 units and rests on the floor; animated
@@ -32,9 +32,9 @@ for exact evidence and limitations.
 
 ## Reports
 
-- test-output/corpus-final/results.json: full decompile and development rebuild.
-- test-output/release-corpus/results.json: all 602 using release executable.
-- test-output/release-corpus/run.json: exact executable/tool fingerprints.
+- test-output/release-corpus2/results.json: current full decompile + release compile.
+- test-output/corpus-heading, corpus-euler: frame-movement yaw A/B runs.
+- test-output/release-corpus, corpus-final: earlier runs (older comparison).
 - test-output/*-ingame-report.json and release screenshots: game evidence.
 - tools/recheck_corpus.py recompiles unedited cached source exports, checking the
   retail input stamps and exporter/comparison tool hashes first.
@@ -57,5 +57,6 @@ Titanfall 1 and Apex MDL files are not direct compiler inputs. R2 v53 is the tar
 
 Used Gravemind projects/r2-model-compiler/index revision 2 and
 games/respawn/modding/mdl-v53-format revision 1. The project note has now been
-updated to revision 3 with these verified results and limitations. Per-triangle
-header size is 0x3C bytes, correcting the older format note's 0x34 claim.
+updated to revision 3 with these verified results and limitations. The format note
+is now revision 2: per-tri header 0x3C, map-collision block rules, frame movement and
+RLE encoding rules.

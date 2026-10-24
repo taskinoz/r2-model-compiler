@@ -67,6 +67,64 @@ struct WeightList {
     std::vector<float> weight, posweight;
 };
 
+// Scale for a 16-bit quantized stream: max(floor, maxAbs) / 32767. When the values
+// already sit on a slightly coarser grid (a decompiled model), that grid's scale is
+// recovered instead so recompiling is lossless. fitVals are the values to test.
+double FitScale(const std::vector<double>& fitVals, double maxAbs, double floor) {
+    double best = std::max(maxAbs, floor) / 32767;
+    if (maxAbs <= floor || fitVals.size() < 8) return best;
+    // Raw (half precision) sections of the source are not on the grid, so up to 10% of
+    // the values may miss it, and the grid is anchored on each of the largest few values.
+    std::vector<double> anchors;
+    for (double v : fitVals) anchors.push_back(std::fabs(v));
+    std::sort(anchors.begin(), anchors.end(), std::greater<double>());
+    anchors.erase(std::unique(anchors.begin(), anchors.end()), anchors.end());
+    if (anchors.size() > 16) anchors.resize(16);
+    auto misses = [&](const std::vector<double>& vals, double s, size_t allowed) {
+        size_t m = 0;
+        for (double v : vals) {
+            double q = v / s;
+            if (q > 32767.5 || q < -32768.5 || std::fabs(q - std::round(q)) > 0.05)
+                if (++m > allowed) break;
+        }
+        return m;
+    };
+    // a spread-out sample rejects almost every candidate cheaply
+    std::vector<double> sample;
+    size_t step = std::max<size_t>(1, fitVals.size() / 48);
+    for (size_t i = 0; i < fitVals.size(); i += step) sample.push_back(fitVals[i]);
+    const size_t allowed = fitVals.size() / 10, sampleAllowed = sample.size() / 6;
+    for (double anchor : anchors) {
+        if (anchor <= floor) break;
+        // n = 32768 covers a grid whose most negative value is -32768
+        for (int n = 32768; n >= 31000; n--) {
+            double s = anchor / n;
+            // retail clamps a few off-grid (raw-sourced) values, but never by much
+            if (s * 32768 * 1.001 < maxAbs) continue;
+            if (misses(sample, s, sampleAllowed) > sampleAllowed) continue;
+            if (misses(fitVals, s, allowed) <= allowed) return s;
+        }
+    }
+    return best;
+}
+
+// Frame movement scales (retail floors: 128 units, 180 degrees).
+Vec4 FrameMovementScales(const std::vector<Vec4>& fm) {
+    Vec4 out;
+    std::vector<double> vals;
+    for (int c = 0; c < 4; c++) {
+        vals.clear();
+        double maxv = 0;
+        for (auto& v : fm) {
+            double x = (&v.x)[c];
+            maxv = std::max(maxv, std::fabs(x));
+            if (x != 0) vals.push_back(x);
+        }
+        (&out.x)[c] = static_cast<float>(FitScale(vals, maxv, c < 3 ? 128. : 180.));
+    }
+    return out;
+}
+
 }  // namespace
 
 void BuildContext::BuildAnimations() {
@@ -230,6 +288,7 @@ void BuildContext::BuildAnimations() {
             float v0, v1;
         };
         std::vector<Move> moves;
+        std::vector<Mat3x4> cum(a.numFrames, Identity());  // accumulated extracted motion per frame
         auto extractLinearMotion = [&](int motiontype, int iStart, int iEnd, int iSrc, WAnim* ref, int iRef) {
             if (a.numFrames <= 1) Fatal("can't extract motion from sequence %s, it has one frame", a.name.c_str());
             iEnd = std::min(iEnd, a.numFrames - 1);
@@ -289,12 +348,15 @@ void BuildContext::BuildAnimations() {
             Vec3 adjpos;
             RadianEuler adjangle;
             Mat3x4 adjmatrix;
+            Mat3x4 prevMove = moves.empty() ? Identity() : AngleMatrix(moves.back().rot, moves.back().pos);
+            if (static_cast<int>(cum.size()) < a.numFrames) cum.resize(a.numFrames, Identity());
             int j;
             for (j = 0; j < numframes; j++) {
                 float t = j / n;
                 adjpos = v * (v0 * t + 0.5f * (v1 - v0) * t * t);
                 adjangle = RadianEuler(rot.x * t, rot.y * t, rot.z * t);
                 adjmatrix = Invert(AngleMatrix(adjangle, adjpos));
+                cum[j + iStart] = Concat(prevMove, AngleMatrix(adjangle, adjpos));
                 for (int k = 0; k < nb; k++) {
                     if (bones[k].parent != -1) continue;
                     Mat3x4 bm = Concat(adjmatrix, AngleMatrix(sanim[j + iStart][k].rot, sanim[j + iStart][k].pos));
@@ -302,6 +364,7 @@ void BuildContext::BuildAnimations() {
                     sanim[j + iStart][k].pos = bm.Origin();
                 }
             }
+            for (int r = j + iStart; r < a.numFrames; r++) cum[r] = Concat(prevMove, AngleMatrix(adjangle, adjpos));
             for (; j + iStart < a.numFrames; j++)
                 for (int k = 0; k < nb; k++) {
                     if (bones[k].parent != -1) continue;
@@ -549,6 +612,58 @@ void BuildContext::BuildAnimations() {
                 if (!(type & STUDIO_LZR)) sanim[m][k].rot.z = sanim[0][k].rot.z;
             }
         }
+        // Respawn root motion. "rm" (rsx) extracts the root bones' exact yaw and
+        // translation relative to frame 0; LX/LY/LZ/LZR extraction above produces a
+        // fitted path. Either becomes a frame-movement track unless $legacymovement.
+        bool exactRootMotion = (a.qc->flags & STUDIO_FRAMEMOVEMENT) && moves.empty() && a.numFrames > 1 &&
+                               !qc.staticProp && !qc.legacyMovement;
+        if (exactRootMotion) {
+            // Retail's yaw is the heading of the root's local Z axis (forward after the
+            // default 90 degree rotation) relative to frame 0; pitch and roll stay in the root.
+            auto heading = [](const Mat3x4& m) { return std::atan2(m.m[1][2], m.m[0][2]); };
+            Mat3x4 t0 = AngleMatrix(sanim[0][rootIndex].rot, sanim[0][rootIndex].pos);
+            float h0 = heading(t0);
+            for (int j = 0; j < a.numFrames; j++) {
+                Mat3x4 t = AngleMatrix(sanim[j][rootIndex].rot, sanim[j][rootIndex].pos);
+                RadianEuler yaw(0, 0, heading(t) - h0);
+                Vec3 o0 = Concat(AngleMatrix(yaw, Vec3(0, 0, 0)), t0).Origin();
+                cum[j] = AngleMatrix(yaw, t.Origin() - o0);
+            }
+        }
+        if ((exactRootMotion || !moves.empty()) && !qc.legacyMovement) {
+            a.frameMove.resize(a.numFrames);
+            for (int j = 0; j < a.numFrames; j++) {
+                Vec3 o = cum[j].Origin();
+                // retail keeps yaw wrapped to [-180, 180], which also keeps the stream scale small
+                float yaw = RadToDeg(MatrixAngles(cum[j]).z);
+                while (yaw > 180.f) yaw -= 360.f;
+                while (yaw < -180.f) yaw += 360.f;
+                a.frameMove[j] = {o.x, o.y, o.z, yaw};
+            }
+            // Quantize the track as it will be stored, then take exactly that motion out
+            // of the root bones so they absorb the quantization error. Extracted linear
+            // motion was already removed from the roots, so only the difference is applied.
+            Vec4 fs = FrameMovementScales(a.frameMove);
+            for (int j = 0; j < a.numFrames; j++) {
+                Vec4& v = a.frameMove[j];
+                for (int c = 0; c < 4; c++) {
+                    float s = (&fs.x)[c];
+                    (&v.x)[c] = std::clamp(std::round((&v.x)[c] / s), -32768.f, 32767.f) * s;
+                }
+                Mat3x4 corr = Invert(AngleMatrix(RadianEuler(0, 0, DegToRad(v.w)), Vec3(v.x, v.y, v.z)));
+                if (!exactRootMotion) corr = Concat(corr, cum[j]);
+                for (int k = 0; k < nb; k++) {
+                    if (bones[k].parent != -1) continue;
+                    Mat3x4 bm = Concat(corr, AngleMatrix(sanim[j][k].rot, sanim[j][k].pos));
+                    sanim[j][k].rot = MatrixAngles(bm);
+                    sanim[j][k].pos = bm.Origin();
+                }
+            }
+            a.flags |= STUDIO_FRAMEMOVEMENT;
+            moves.clear();
+        } else {
+            a.flags &= ~STUDIO_FRAMEMOVEMENT;
+        }
         for (auto& mv : moves) {
             CMovement cm;
             cm.endFrame = mv.endframe;
@@ -615,8 +730,43 @@ bool StreamIsZero(const std::vector<int16_t>& s) {
 
 }  // namespace
 
+// Position delta from the bind pose (or the weighted raw value for delta animations).
+static Vec3 PosDelta(const BuildContext& ctx, const WAnim& a, int j, int f) {
+    const BoneXf& b = a.sanim[f][j];
+    if (!(a.flags & STUDIO_DELTA)) return b.pos - ctx.bones[j].pos;
+    float r = a.weight[j] > 0 ? a.posWeight[j] / a.weight[j] : 1.f;
+    return b.pos * r;
+}
+
+// The position scale lives in each record, but retail uses one value per bone for the
+// whole animation (every section), with studiomdl's floor of 128. When the input is
+// already quantized (a decompiled model), the original scale is recovered from the grid
+// so that recompiling is lossless; otherwise the scale is maxPos / 32767. The last frame
+// of a sectioned animation is left out of the fit: retail's trailing section stores it
+// at half precision, so a decompiled value is not on the grid.
+static std::vector<float> PositionScales(const BuildContext& ctx, const WAnim& a, bool sectioned) {
+    const int nb = static_cast<int>(ctx.bones.size());
+    const int fitFrames = sectioned ? a.numFrames - 1 : a.numFrames;
+    std::vector<float> scales(nb);
+    std::vector<double> vals;
+    for (int j = 0; j < nb; j++) {
+        vals.clear();
+        double maxPos = 0;
+        for (int f = 0; f < a.numFrames; f++) {
+            Vec3 p = PosDelta(ctx, a, j, f);
+            for (int c = 0; c < 3; c++) {
+                maxPos = std::max(maxPos, std::fabs(static_cast<double>(p[c])));
+                if (f < fitFrames && p[c] != 0) vals.push_back(p[c]);
+            }
+        }
+        scales[j] = static_cast<float>(FitScale(vals, maxPos, 128.));
+    }
+    return scales;
+}
+
 // Encodes frames [f0, f1] of an animation into one bone chain.
-static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a, int f0, int f1) {
+static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a, const std::vector<float>& posScales,
+                                        int f0, int f1) {
     const auto& bones = ctx.bones;
     const int nb = static_cast<int>(bones.size());
     bool delta = (a.flags & STUDIO_DELTA) != 0;
@@ -631,26 +781,20 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
         // deltas from the bind pose (or raw values for delta animations)
         std::vector<Vec3> dpos(nf);
         std::vector<RadianEuler> drot(nf);
-        float maxPos = 0;
         for (int n = 0; n < nf; n++) {
             const BoneXf& b = a.sanim[f0 + n][j];
+            dpos[n] = PosDelta(ctx, a, j, f0 + n);
             if (delta) {
-                dpos[n] = b.pos;
-                float r = a.weight[j] > 0 ? a.posWeight[j] / a.weight[j] : 1.f;
-                dpos[n] *= r;
                 drot[n] = b.rot;
             } else {
-                dpos[n] = b.pos - bones[j].pos;
                 for (int c = 0; c < 3; c++) drot[n][c] = b.rot[c] - bones[j].rot[c];
             }
             for (int c = 0; c < 3; c++) {
                 while (drot[n][c] >= kPi) drot[n][c] -= 2 * kPi;
                 while (drot[n][c] < -kPi) drot[n][c] += 2 * kPi;
             }
-            for (int c = 0; c < 3; c++) maxPos = std::max(maxPos, std::fabs(dpos[n][c]));
         }
-        // per-record position scale (v53 keeps it in the record), same floor as studiomdl
-        float posscale = std::max(maxPos, 128.f) / 32767.f;
+        float posscale = posScales[j];
         std::vector<int16_t> pv[3], rv[3];
         for (int c = 0; c < 3; c++) {
             pv[c].resize(nf);
@@ -707,7 +851,8 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
                 double dz = value.z/norm - sign*q.z, dw = value.w/norm - sign*q.w;
                 return dx*dx + dy*dy + dz*dz + dw*dw;
             };
-            if (error(decoded) <= error(rle) + 1e-15) {
+            // retail one-frame chains (trailing sections, single-frame animations) are always raw
+            if (nf == 1 || error(decoded) <= error(rle) + 1e-15) {
                 buf.PatchAt<uint64_t>(rec + 8, packed);
                 flags |= 0x04;
             } else {
@@ -718,9 +863,10 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
         } else {
             animRot = true;
         }
-        // position: raw Vector48 only when half precision is good enough
+        // position: raw Vector48 only when half precision is good enough, except that
+        // retail one-frame chains always store it raw, even at the bind position
         bool animPos = false;
-        if (posZero) {
+        if (posZero && nf > 1) {
             // zero offsets: bind position
         } else if (posConst || nf == 1) {
             Vec3 p = delta ? dpos[0] : a.sanim[f0][j].pos;
@@ -728,7 +874,7 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
             uint16_t h[3];
             for (int c = 0; c < 3; c++) {
                 h[c] = FloatToHalf(p[c]);
-                if (std::fabs(HalfToFloat(h[c]) - p[c]) > 0.01f) ok = false;
+                if (nf > 1 && std::fabs(HalfToFloat(h[c]) - p[c]) > 0.01f) ok = false;
             }
             if (ok) {
                 for (int c = 0; c < 3; c++) buf.PatchAt<uint16_t>(rec + 16 + c * 2, h[c]);
@@ -770,6 +916,31 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
     return buf.Data();
 }
 
+// mstudioframemovement_t: float scale[4]; short offset[4]; then RLE streams for
+// x, y, z and yaw. Default scales match retail (128/32767 units, 180/32767 degrees).
+static std::vector<uint8_t> EncodeFrameMovement(const std::vector<Vec4>& fm) {
+    Buffer b;
+    b.Reserve(24);
+    Vec4 scales = FrameMovementScales(fm);
+    for (int c = 0; c < 4; c++) {
+        float scale = (&scales.x)[c];
+        b.PatchAt<float>(c * 4, scale);
+        std::vector<int16_t> vals(fm.size());
+        bool zero = true;
+        for (size_t f = 0; f < fm.size(); f++) {
+            vals[f] = static_cast<int16_t>(std::clamp(std::round((&fm[f].x)[c] / scale), -32768.f, 32767.f));
+            if (vals[f]) zero = false;
+        }
+        if (zero) continue;
+        size_t at = b.Tell();
+        if (at > 32767) Fatal("frame movement track too large");
+        b.PatchAt<int16_t>(16 + c * 2, static_cast<int16_t>(at));
+        for (int16_t v : EncodeRLE(vals)) b.I16(v);
+    }
+    b.Align(4);
+    return b.Data();
+}
+
 void EncodeAnimations(BuildContext& ctx) {
     auto& bones = ctx.bones;
     const int nb = static_cast<int>(bones.size());
@@ -796,24 +967,27 @@ void EncodeAnimations(BuildContext& ctx) {
         CAnimation ca;
         ca.name = a.name;
         ca.fps = a.fps;
-        ca.flags = a.flags & ~(STUDIO_FRAMEMOVEMENT);
+        ca.flags = a.flags;
+        if (!a.frameMove.empty()) ca.frameMovement = EncodeFrameMovement(a.frameMove);
+        else ca.flags &= ~STUDIO_FRAMEMOVEMENT;
         ca.numFrames = a.numFrames;
         ca.movements = a.movements;
         ca.bmin = a.bmin;
         ca.bmax = a.bmax;
         bool sectioned = a.numFrames >= sfMin && a.numFrames > sf && sf > 0;
+        std::vector<float> posScales = PositionScales(ctx, a, sectioned);
         if (!sectioned) {
-            ca.sections.push_back(EncodeChain(ctx, a, 0, a.numFrames - 1));
+            ca.sections.push_back(EncodeChain(ctx, a, posScales, 0, a.numFrames - 1));
         } else {
             ca.sectionFrames = sf;
             int nsec = (a.numFrames - 1) / sf + 1;
             for (int s = 0; s < nsec; s++) {
                 int f0 = s * sf;
                 int f1 = std::min(f0 + sf, a.numFrames - 1);
-                ca.sections.push_back(EncodeChain(ctx, a, f0, f1));
+                ca.sections.push_back(EncodeChain(ctx, a, posScales, f0, f1));
             }
             // trailing section with only the final frame
-            ca.sections.push_back(EncodeChain(ctx, a, a.numFrames - 1, a.numFrames - 1));
+            ca.sections.push_back(EncodeChain(ctx, a, posScales, a.numFrames - 1, a.numFrames - 1));
         }
         ctx.out.animations.push_back(std::move(ca));
     }

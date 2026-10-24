@@ -339,6 +339,7 @@ struct QcModelDef {
     int minLod = 0;
     int allowRootLods = 0;
     int sectionFrames = 0, sectionMinFrames = 0;
+    bool legacyMovement = false;  // write Valve piecewise movements instead of frame movement
     std::string unkString;  // "Titan" on titan models
     std::vector<std::string> boneFollowers;
 

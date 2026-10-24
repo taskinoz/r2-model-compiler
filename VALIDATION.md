@@ -4,7 +4,7 @@ This build is usable for Titanfall 2 static props, moving physics props and skin
 animated models. It is not a claim of complete Valve/Respawn feature parity.
 
 Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
-SHA-256: `8973e9634697f51b0aa5fe8cbec7022ea11f21e068335da363859b3df15137d5`.
+SHA-256: `4d5f04b9303acd9858fc53e5219d35302dbe7f685a2412de45e0097e405130be`.
 
 ## Automated checks
 
@@ -18,30 +18,41 @@ SHA-256: `8973e9634697f51b0aa5fe8cbec7022ea11f21e068335da363859b3df15137d5`.
 - A command-line test reproduces Crowbar's working directory, QC basename and
   studiomdl arguments, including a game path containing spaces. Crowbar's GUI
   itself has not been driven.
-- The final release executable was tested directly against the full corpus.
+- The release build was tested against the full corpus (see below for the exact build).
 
 ## Retail corpus
 
 All **602/602** retail `mp_common` MDL v53 models decompiled and compiled without a
-compile failure or decompiler exception. The release executable recompiled the
-saved source exports in a separate pass; **593/602** match every compared field.
+compile failure or decompiler exception. With the stricter comparison below,
+**564/602** match every compared field.
 
 Reports:
 
-- `test-output/corpus-final/results.json`: complete export and initial rebuild.
-- `test-output/release-corpus/results.json`: complete check using the release EXE.
-- `test-output/release-corpus/run.json`: compiler and comparison-tool fingerprints.
+- `test-output/release-corpus2/results.json` and `release-corpus2.log`: full run
+  (fresh decompile and compile) with the release build. It was built from this
+  source before a final comment/formatting-only edit; the final executable above
+  was re-checked with CTest and a five-model spot run (`test-output/final-spot`).
+- `test-output/corpus-heading` and `test-output/corpus-euler`: A/B runs of the two
+  frame-movement yaw definitions (heading kept: 7 vs 9 animation differences).
 
 Reproduce a fresh run:
 
 ```powershell
-python tools\roundtrip.py --jobs 8 --compiler build\r2studiomdl.exe --out test-output\fresh path\to\retail\models
+python tools
+oundtrip.py --jobs 8 --compiler build
+2studiomdl.exe --out test-outputresh path	o
+etail\models
 ```
 
 To recompile existing, unedited exports with another build:
 
 ```powershell
-python tools\recheck_corpus.py --from-report test-output\corpus-final\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
+python tools
+echeck_corpus.py --from-report test-output
+elease-corpus2
+esults.json --compiler build
+2studiomdl.exe --jobs 8 --out test-output
+echeck
 ```
 
 The recheck verifies input model size/timestamps and the exporter/comparison tool
@@ -49,28 +60,31 @@ hashes. It assumes the cached QC/SMD exports have not been manually edited.
 
 Compared fields include bone names/parents, bind translations, texture names,
 triangle counts by LOD, sequence labels, animation frame counts and sampled
-non-delta world positions, physics solid counts/volume, attachment count and the
-presence of map-collision data. Animation samples are first, middle and last
-frames. This is not a byte-for-byte comparison or exhaustive animation/event test.
+non-delta world positions (with frame movement applied), physics solid
+counts/volume, attachment count, the map-collision header count, the
+face/plane/edge/vertex counts of every collision piece grouped by owning bone, and
+each bone's collision reference. Entry order within the block is not compared:
+retail jointed models order it by neither bone nor PHY solid. Animation samples are
+first, middle and last frames. This is not a byte-for-byte comparison.
 
-The nine remaining comparison differences are retained in the report:
+The 38 remaining differences are retained in the report:
 
-| Model | Difference |
+| Models | Difference |
 | --- | --- |
-| `pete_scripted_skyway` | Sampled world position differs by 0.27 inches |
-| `droppod_fireteam` | Sampled world position differs by 0.43 inches |
-| `straton_anims` | Sampled world position differs by 0.72 inches |
-| `widow` | Sampled world position differs by 0.92 inches |
-| `dropship_common` | Sampled world position differs by 0.27 inches |
-| `battery_port_animated` | Output includes a map-collision block absent in the input |
-| `drone_air_attack_rockets` | Output includes a map-collision block absent in the input |
-| `drone_air_attack_plasma` | Output includes a map-collision block absent in the input |
-| `projectile_arc_ball` | Output includes a map-collision block absent in the input |
+| `pov_pete_core`, `pete_scripted_skyway` | Sampled world position differs by 0.28 inches |
+| `r2_prowler` | 0.30 inches |
+| `dropship_common` | 0.44 inches |
+| `droppod_fireteam` | 0.56 inches |
+| `straton_anims` | 0.69 inches |
+| `widow` | 0.92 inches |
+| 31 models (titans, gibs, weapons, projectiles, `marvin`, `super_spectre_*`) | One or two collision pieces differ by 1-3 faces, bevels, edges or vertices |
 
-Large world-space animation positions are re-quantized into the format's 16-bit
-position streams; these five animations are not claimed lossless. The extra
-collision blocks are structurally valid generated data, but remain differences
-from the retail files.
+The animation differences come from bones 6,000-54,000 units from the model origin
+and from how yaw is split between the frame-movement track and the root bone. Retail
+does not record that split, and our heading-based split is within 0.003-0.04 degrees
+of it. The collision differences come from hull reconstruction: retail keeps
+collinear points on hull edges and splits near-coplanar faces slightly differently.
+Volumes and solid counts match. Neither kind is claimed lossless.
 
 ## In-game checks (Northstar)
 
@@ -103,11 +117,21 @@ Structured reports and screenshots are under `test-output/`:
 - Text DMX unnamed elements and malformed-string diagnostics.
 - Decompiler support for one-frame retail events with NaN cycle times.
 - Checkpointed/resumable parallel corpus runs and explicit in-game pass/fail reports.
+- Respawn frame-movement tracks (`rm`, and LX/LY/LZ/LZR extraction): wrapped yaw
+  from the root's heading, quantized before removal so the roots absorb the error.
+  The decompiler bakes retail tracks into the roots and emits `rm`. **Frame-movement
+  output has only been checked by round trip, not yet in game.**
+- Retail RLE rules: one posscale per bone per animation, raw one-frame chains, and
+  recovery of an existing quantization grid so decompiled input recompiles losslessly.
+- Map-collision block for jointed models (bone references), bevels only where
+  dot(n0, n1) < 0.26, at most 63 faces per piece, and retail bone references
+  for models without physics.
 
 ## Remaining feature limits
 
-Animation IK rules/fixups, Respawn-native frame-movement tracks, procedural bones
-and UI panel meshes remain incomplete. Legacy movement records are emitted.
+Animation IK rules/fixups, procedural bones and UI panel meshes remain incomplete.
+Root motion is written as Respawn frame-movement tracks (`$legacymovement` selects
+Valve movement records).
 Ragdoll joint limits have not been measured exhaustively. Titanfall 1 and Apex
 MDL files are not direct inputs: this compiler reads QC/SMD/DMX and targets R2 v53.
 

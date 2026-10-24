@@ -84,6 +84,9 @@ def summary(path):
         nf = a['numframes']
         sample = sorted({0, nf // 2, nf - 1}) if nf > 0 else []
         a, name, frames = dc.decode_anim(d, m, bones, ai, sample)
+        fms = dc.decode_frame_movement(d, m, ai, sample)
+        if fms is not None and not (a['flags'] & 4):
+            frames = [dc.apply_root_motion(bones, fr, fm) for fr, fm in zip(frames, fms)]
         anims.append({'frames': nf, 'delta': bool(a['flags'] & 4),
                       'world': {f: world_positions(bones, pose) for f, pose in zip(sample, frames)}})
     s['anims'] = anims
@@ -94,6 +97,20 @@ def summary(path):
     s['attach'] = h['numlocalattachments']
     s['hitboxsets'] = h['numhitboxsets']
     s['coll'] = h['staticCollisionCount']
+    # map-collision entries: header-counted (rigid) or bone-referenced (jointed)
+    entries = []
+    if h['collisionOffset'] and h['phySize']:
+        n = h['staticCollisionCount'] or sum(b['collisionCount'] for b in bones if b['collisionIndex'] != 0xFFFF)
+        for i in range(n):
+            entries.append(struct.unpack_from('<4i', d, h['collisionOffset'] + i * 20))
+    # Entry order is not meaningful (retail jointed blocks follow neither bone nor PHY
+    # order), so entries are grouped per owning bone and sorted within each group.
+    groups = {'static': entries} if h['staticCollisionCount'] else {
+        i: entries[b['collisionIndex']:b['collisionIndex'] + b['collisionCount']]
+        for i, b in enumerate(bones) if b['collisionIndex'] != 0xFFFF and b['collisionCount']}
+    s['collEntries'] = {str(k): sorted(v) for k, v in groups.items()}
+    # bone references: the index only matters when there are no pieces (0 vs 0xFFFF)
+    s['boneColl'] = [(b['collisionIndex'] if not b['collisionCount'] else 'ref', b['collisionCount']) for b in bones]
     s['pertri'] = h['perTriAABBLeafCount']
     return s
 
@@ -140,8 +157,18 @@ def compare(a, b):
                 issues.append('phy volume %.1f vs %.1f' % (va, vb))
     if a['attach'] != b['attach']:
         issues.append('attachments %d vs %d' % (a['attach'], b['attach']))
-    if bool(a['coll']) != bool(b['coll']):
-        issues.append('collision block %d vs %d' % (a['coll'], b['coll']))
+    if a['coll'] != b['coll']:
+        issues.append('collision block count %d vs %d' % (a['coll'], b['coll']))
+    ea, eb = a.get('collEntries', {}), b.get('collEntries', {})
+    na, nb = sum(map(len, ea.values())), sum(map(len, eb.values()))
+    if na != nb or set(ea) != set(eb):
+        issues.append('collision entries %d vs %d' % (na, nb))
+    elif ea != eb:
+        pairs = [(x, y) for k in ea for x, y in zip(ea[k], eb[k]) if x != y]
+        issues.append('collision entry counts differ in %d/%d pieces (e.g. %s vs %s)' % (
+            len(pairs), na, tuple(pairs[0][0]), tuple(pairs[0][1])))
+    if a.get('boneColl') and a['bones'] == b['bones'] and a['boneColl'] != b['boneColl']:
+        issues.append('bone collision references differ')
     return issues
 
 

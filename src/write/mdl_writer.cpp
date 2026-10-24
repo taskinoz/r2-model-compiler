@@ -151,8 +151,8 @@ void MdlWriter::WriteBones() {
         Str(p + 0xC8, p, bn.surfaceProp);
         b_.PatchI32(p + 0xCC, bn.contents);
         b_.PatchI32(p + 0xD0, 0);
-        b_.PatchAt<uint16_t>(p + 0xD4, 0xFFFF);  // collision index: none
-        b_.PatchAt<uint16_t>(p + 0xD6, 0);
+        b_.PatchAt<uint16_t>(p + 0xD4, static_cast<uint16_t>(bn.collisionIndex < 0 ? 0xFFFF : bn.collisionIndex));
+        b_.PatchAt<uint16_t>(p + 0xD6, static_cast<uint16_t>(bn.collisionCount));
     }
     b_.Align(4);
     for (size_t i = 0; i < m_.bones.size(); i++) {

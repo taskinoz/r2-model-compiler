@@ -91,7 +91,11 @@ To create the Windows package after building and testing:
 .\tools\package.ps1
 ```
 
-Limitations: animation IK rules/fixups, Respawn-native frame-movement tracks,
-procedural bones and UI panel meshes remain incomplete. Legacy movement records
-are written. Titanfall 1 and Apex model files are not direct compiler inputs;
+Root motion: an `$animation`/`$sequence` with `rm` stores the root bones' yaw and
+translation as a Respawn frame-movement track, as retail models do; `LX`/`LY`/`LZ`/
+`LZR` motion extraction is stored the same way. Add `$legacymovement` to the QC to
+write Valve-style piecewise movement records instead.
+
+Limitations: animation IK rules/fixups, procedural bones and UI panel meshes remain
+incomplete. Titanfall 1 and Apex model files are not direct compiler inputs;
 this tool consumes QC/SMD/DMX and targets Titanfall 2 v53 output.

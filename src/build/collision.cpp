@@ -372,7 +372,13 @@ std::vector<uint8_t> BuildCompactSurface(const Solid& s, DVec3& dragOut) {
 // Respawn map-collision block (one brush per convex piece, HL units)
 // ---------------------------------------------------------------------------
 
-std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& edges) {
+// Retail rules (measured over mp_common): an edge gets a bevel plane only when its two
+// faces' normals differ by more than ~75 degrees (dot < 0.26); pieces never exceed 63
+// faces, and models with a larger piece carry no block at all.
+constexpr double kBevelDot = 0.26;
+constexpr int kMaxBrushFaces = 63;
+
+std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int& edges) {
     struct Face {
         DVec3 n;
         double d;
@@ -424,6 +430,7 @@ std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& edges) {
             }
     faces = static_cast<int>(fs.size());
     edges = static_cast<int>(es.size());
+    bevels = 0;
     Buffer out;
     for (auto& f : fs) {
         out.F32(static_cast<float>(f.n.x));
@@ -432,6 +439,8 @@ std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& edges) {
         out.F32(static_cast<float>(f.d));
     }
     for (auto& e : es) {
+        if (DDot(fs[e.s0].n, fs[e.s1].n) >= kBevelDot) continue;
+        bevels++;
         DVec3 n = fs[e.s0].n + fs[e.s1].n;
         double l = DLen(n);
         if (l > 0) n = n * (1 / l);
@@ -502,7 +511,11 @@ bool MakeHull(const std::vector<Vec3>& pts, Hull& out) {
 
 void BuildCollisionModel(BuildContext& ctx) {
     QcCollision& qc = ctx.qc.collision;
-    if (!qc.present) return;
+    if (!qc.present) {
+        // retail models without physics point every bone at entry 0 with no pieces
+        for (auto& b : ctx.out.bones) b.collisionIndex = 0, b.collisionCount = 0;
+        return;
+    }
     SrcInst* inst = ctx.Instance(qc.source, qc.sourceScale, false, false, qc.file);
     if (inst->gverts.empty() || inst->faces.empty()) Fatal("collision model %s has no triangles", qc.file.c_str());
     const auto& bones = ctx.bones;
@@ -830,38 +843,52 @@ void BuildCollisionModel(BuildContext& ctx) {
                                           [](size_t a, const Solid& s) { return a + s.pieces.size(); })),
          totalMass);
 
-    // --- map collision block for rigid models (retail writes it for single-solid PHYs)
-    if (solids.size() == 1) {
-        const Solid& s = solids[0];
-        Buffer hdrs, data;
-        size_t n = s.pieces.size();
+    // --- map collision block: one brush per convex piece, in solid space. Rigid models
+    // count the entries in the header; jointed models reference them from each bone.
+    {
+        Buffer hdrs;
         std::vector<std::vector<uint8_t>> blobs;
         std::vector<std::array<int, 4>> counts;
-        for (auto& h : s.pieces) {
-            if (h.verts.size() > 255) {
-                Warn("collision piece has %d vertices; map collision block skipped", static_cast<int>(h.verts.size()));
-                blobs.clear();
-                break;
+        bool ok = true;
+        for (auto& s : solids)
+            for (auto& h : s.pieces) {
+                int faces, bevels, edges;
+                auto blob = BuildBrushPiece(h, faces, bevels, edges);
+                if (h.verts.size() > 255 || faces > kMaxBrushFaces || edges > 255) {
+                    Verbose("collision piece with %d faces: map collision block omitted (retail limit %d)", faces, kMaxBrushFaces);
+                    ok = false;
+                }
+                blobs.push_back(std::move(blob));
+                counts.push_back({faces, faces + bevels, edges, static_cast<int>(h.verts.size())});
             }
-            int faces, edges;
-            blobs.push_back(BuildBrushPiece(h, faces, edges));
-            counts.push_back({faces, faces + edges, edges, static_cast<int>(h.verts.size())});
+        if (!ok && !qc.joints && !ctx.out.bones.empty()) {
+            // retail rigid models without a block point bone 0 at entry 0 with no pieces
+            ctx.out.bones[0].collisionIndex = 0;
+            ctx.out.bones[0].collisionCount = 0;
         }
-        if (blobs.size() == n) {
-            size_t dataStart = 20 * n;
-            size_t at = dataStart;
+        if (ok && !blobs.empty()) {
+            size_t n = blobs.size();
+            size_t at = 20 * n;
             for (size_t i = 0; i < n; i++) {
-                hdrs.I32(counts[i][0]);
-                hdrs.I32(counts[i][1]);
-                hdrs.I32(counts[i][2]);
-                hdrs.I32(counts[i][3]);
+                for (int k = 0; k < 4; k++) hdrs.I32(counts[i][k]);
                 hdrs.I32(static_cast<int>(at - i * 20));
                 at += blobs[i].size();
             }
             for (auto& bl : blobs) hdrs.Append(bl);
             ctx.out.physics.collisionBlock = hdrs.Data();
-            ctx.out.physics.staticCollisionCount = static_cast<int>(n);
-            if (bones.size() == 1) ctx.qc.flags |= STUDIOHDR_FLAGS_RESPAWN_800000;
+            if (!qc.joints) {
+                ctx.out.physics.staticCollisionCount = static_cast<int>(n);
+                if (bones.size() == 1) ctx.qc.flags |= STUDIOHDR_FLAGS_RESPAWN_800000;
+            } else {
+                int index = 0;
+                for (auto& s : solids) {
+                    if (s.bone >= 0 && s.bone < static_cast<int>(ctx.out.bones.size())) {
+                        ctx.out.bones[s.bone].collisionIndex = index;
+                        ctx.out.bones[s.bone].collisionCount = static_cast<int>(s.pieces.size());
+                    }
+                    index += static_cast<int>(s.pieces.size());
+                }
+            }
         }
     }
 

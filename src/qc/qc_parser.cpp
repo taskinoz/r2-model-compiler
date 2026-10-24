@@ -1558,6 +1558,7 @@ void Parser::Register() {
         m_.sectionFrames = I("frames");
         if (Avail()) m_.sectionMinFrames = I("minframes");
     };
+    h["$legacymovement"] = [&] { m_.legacyMovement = true; };
     h["$animblocksize"] = [&] { tk_.SkipRestOfCommand(); };
     h["$bonesaveframe"] = [&] { tk_.SkipRestOfCommand(); };
     h["$unkstring"] = [&] { m_.unkString = S("string"); };

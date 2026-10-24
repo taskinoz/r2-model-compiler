@@ -118,6 +118,38 @@ def extract(d, p, frame, scale):
         return struct.unpack_from('<h', d, p + valid * 2)[0] * scale
 
 
+def decode_frame_movement(d, m, ai, frame_indices):
+    """Respawn root motion (STUDIO_FRAMEMOVEMENT): (x, y, z, yaw degrees) per frame, or None."""
+    o = m.hdr['localanimindex'] + ai * 0x5C
+    a = mdl53.u(mdl53.ANIMDESC_FIELDS, d, o)
+    if not (a['flags'] & 0x40000) or not a['framemovementindex']:
+        return None
+    fo = o + a['framemovementindex']
+    scale = struct.unpack_from('<4f', d, fo)
+    offs = struct.unpack_from('<4h', d, fo + 16)
+    return [tuple(extract(d, fo + offs[c] if offs[c] > 0 else None, f, scale[c]) for c in range(4)) for f in frame_indices]
+
+
+def apply_root_motion(bones, pose, fm):
+    """Premultiplies root bones by a frame-movement transform."""
+    if fm is None:
+        return pose
+    mv = angle_matrix((0, 0, math.radians(fm[3])))
+    for k in range(3):
+        mv[k][3] = fm[k]
+    out = []
+    for bi, (pos, rm) in enumerate(pose):
+        if bones[bi]['parent'] == -1:
+            mm = [row[:] for row in rm]
+            for k in range(3):
+                mm[k][3] = pos[k]
+            mm = concat(mv, mm)
+            pos = (mm[0][3], mm[1][3], mm[2][3])
+            rm = [[mm[r][c] for c in range(3)] + [0.0] for r in range(3)]
+        out.append((pos, rm))
+    return out
+
+
 def decode_anim(d, m, bones, ai, frame_indices=None):
     """Return descriptor, name and local poses in the requested frame order."""
     h = m.hdr
@@ -424,6 +456,10 @@ def decompile(path, outdir):
     for ai in range(h['numlocalanim']):
         a, name, frames = decode_anim(d, m, bones, ai)
         delta = bool(a['flags'] & 4)
+        fms = decode_frame_movement(d, m, ai, range(len(frames)))
+        if fms is not None and not delta:
+            # bake root motion back into the root bones; "rm" re-extracts it on compile
+            frames = [apply_root_motion(bones, fr, fm) for fr, fm in zip(frames, fms)]
         smd = 'anim_%s.smd' % name.replace('@', 'at_').replace('/', '_').replace('\\', '_')
         skel = []
         for fr in frames:
@@ -438,6 +474,8 @@ def decompile(path, outdir):
         opts = ['fps %s' % fmt(a['fps'])]
         if a['flags'] & 1:
             opts.append('loop noforceloop')
+        if fms is not None and not delta and not static:
+            opts.append('rm')
         if delta:
             opts.append('// delta animation: decoded as raw deltas')
         anim_names.append(('a_' + name.replace('@', 'at_'), smd, opts, a))
@@ -489,7 +527,9 @@ def decompile(path, outdir):
     if h['phySize']:
         p = phylib.parse_phy(d[h['phyOffset']:h['phyOffset'] + h['phySize']])
         text = p['text']
-        jointed = p['solidCount'] > 1 or 'parent' in text
+        # jointed solids carry ledge client data = bone + 1 (rigid $collisionmodel uses 0)
+        jointed = p['solidCount'] > 1 or 'parent' in text or any(
+            L['client_or_node'] for sd in p['solids'] for L in sd['ledges'] if not L['has_children'])
         tris = []
         solid_names = []
         import re

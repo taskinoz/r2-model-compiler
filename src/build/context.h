@@ -69,6 +69,7 @@ struct WAnim {
     std::vector<float> weight;    // per bone
     std::vector<float> posWeight; // per bone
     std::vector<CMovement> movements;
+    std::vector<Vec4> frameMove;  // per frame: x, y, z, yaw (degrees); empty when unused
     std::vector<CIKRule> ikRules;
     Vec3 bmin, bmax;
     bool noAnimation = false;
