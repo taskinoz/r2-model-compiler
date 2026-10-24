@@ -55,13 +55,21 @@ std::vector<Token> Tokenizer::TokenizeText(const std::string& text, const std::s
         t.newlineBefore = newline;
         newline = false;
         if (c == '"') {
+            // QC paths use literal backslashes, including a trailing backslash
+            // before the closing quote. Decode escapes only in event options,
+            // where retail strings can contain literal quote characters.
+            bool eventOptions = out.size() >= 3 && IEquals(out[out.size() - 3].text, "event");
             i++;
-            size_t s = i;
             while (i < n && text[i] != '"') {
+                if (eventOptions && text[i] == '\\' && i + 1 < n && (text[i + 1] == '"' || text[i + 1] == '\\')) {
+                    t.text += text[i + 1];
+                    i += 2;
+                    continue;
+                }
                 if (text[i] == '\n') line++;
-                i++;
+                t.text += text[i++];
             }
-            t.text = text.substr(s, i - s);
+            if (i == n) Fatal("%s(%d): unterminated quoted string", file.c_str(), t.line);
             t.quoted = true;
             i++;
         } else if (c == '{' || c == '}') {

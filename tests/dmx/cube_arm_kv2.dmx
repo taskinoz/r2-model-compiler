@@ -1,0 +1,136 @@
+<!-- dmx encoding keyvalues2 1 format model 22 -->
+"DmElement"
+{
+	"id" "elementid" "d2cf1451-8fb9-3988-82a0-3feb8bcae2ab"
+	"name" "string" "Scene"
+	"skeleton" "element" "094e4572-7f24-34fc-b2f9-a2abd8adfcaf"
+	"model" "element" "094e4572-7f24-34fc-b2f9-a2abd8adfcaf"
+}
+
+"DmeJoint"
+{
+	"id" "elementid" "81f6c7ac-987e-36be-8627-20f7e510c073"
+	"name" "string" "Bone"
+	"transform" "DmeTransform"
+	{
+		"id" "elementid" "df16898f-f7c6-30bb-bb2c-177de5c386e5"
+		"name" "string" "Bone"
+		"position" "vector3" "0.0 0.0 0.0"
+		"orientation" "quaternion" "0.7071068286895752 0.0 0.0 0.7071068286895752"
+	}
+	"children" "element_array" [ ]
+}
+
+"DmeDag"
+{
+	"id" "elementid" "47236b93-f553-356f-9ac0-d03caeeb2081"
+	"name" "string" "Cube"
+	"shape" "DmeMesh"
+	{
+		"id" "elementid" "6bacb600-e735-386d-b962-507e8c804710"
+		"name" "string" "Cube"
+		"visible" "bool" "1"
+		"bindState" "element" "1e9a25eb-a1c9-3380-a9d0-6c7b61e747a7"
+		"currentState" "element" "1e9a25eb-a1c9-3380-a9d0-6c7b61e747a7"
+		"baseStates" "element_array"
+		[
+			"element" "1e9a25eb-a1c9-3380-a9d0-6c7b61e747a7"
+		]
+		"faceSets" "element_array"
+		[
+			"DmeFaceSet"
+			{
+				"id" "elementid" "a866cc18-0ba3-3a50-b038-d1874db69730"
+				"name" "string" "no_material"
+				"material" "DmeMaterial"
+				{
+					"id" "elementid" "e82d7823-6a60-359f-a9e8-8c2665167bdb"
+					"name" "string" "no_material"
+					"mtlName" "string" "no_material"
+				}
+				"faces" "int_array" ["0", "1", "2", "3", "-1", "4", "5", "6", "7", "-1", "8", "9", "10", "11", "-1", "12", "13", "14", "15", "-1", "16", "17", "18", "19", "-1", "20", "21", "22", "23", "-1"]
+			}
+		]
+	}
+	"transform" "DmeTransform"
+	{
+		"id" "elementid" "a9601499-251d-3336-816c-8f8bed562dc9"
+		"name" "string" "Cube"
+		"position" "vector3" "0.0 0.0 0.0"
+		"orientation" "quaternion" "0.0 0.0 0.0 1.0"
+	}
+}
+
+"DmeVertexData"
+{
+	"id" "elementid" "1e9a25eb-a1c9-3380-a9d0-6c7b61e747a7"
+	"name" "string" "bind"
+	"vertexFormat" "string_array" ["position$0", "normal$0", "texcoord$0", "blendweights$0", "blendindices$0"]
+	"flipVCoordinates" "bool" "1"
+	"jointCount" "int" "1"
+	"position$0" "vector3_array" ["-1.0 -1.0 -1.0", "-1.0 1.0 -1.0", "1.0 1.0 -1.0", "1.0 -1.0 -1.0", "-1.0 -1.0 1.0", "-1.0 1.0 1.0", "1.0 1.0 1.0", "1.0 -1.0 1.0"]
+	"position$0Indices" "int_array" ["4", "5", "1", "0", "5", "6", "2", "1", "6", "7", "3", "2", "7", "4", "0", "3", "0", "1", "2", "3", "7", "6", "5", "4"]
+	"texcoord$0" "vector2_array" ["0.5 0.5", "1.0 0.5", "1.0 0.0", "0.5 0.0", "0.0 0.5", "0.0 0.0", "0.5 1.0", "1.0 1.0", "0.0 1.0"]
+	"texcoord$0Indices" "int_array" ["0", "1", "2", "3", "0", "1", "2", "3", "0", "4", "5", "3", "0", "4", "5", "3", "0", "6", "7", "1", "0", "6", "8", "4"]
+	"blendweights$0" "float_array" ["1.0", "1.0", "1.0", "1.0", "1.0", "1.0", "1.0", "1.0"]
+	"blendindices$0" "int_array" ["1", "1", "1", "1", "1", "1", "1", "1"]
+	"normal$0" "vector3_array" ["-1.0 0.0 0.0", "-1.0 0.0 0.0", "-1.0 0.0 0.0", "-1.0 0.0 0.0", "0.0 1.0 0.0", "0.0 1.0 0.0", "0.0 1.0 0.0", "0.0 1.0 0.0", "1.0 0.0 0.0", "1.0 0.0 0.0", "1.0 0.0 0.0", "1.0 0.0 0.0", "0.0 -1.0 0.0", "0.0 -1.0 0.0", "0.0 -1.0 0.0", "0.0 -1.0 0.0", "0.0 0.0 -1.0", "0.0 0.0 -1.0", "0.0 0.0 -1.0", "0.0 0.0 -1.0", "0.0 0.0 1.0", "0.0 0.0 1.0", "0.0 0.0 1.0", "0.0 0.0 1.0"]
+	"normal$0Indices" "int_array" ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"]
+}
+
+"DmeModel"
+{
+	"id" "elementid" "094e4572-7f24-34fc-b2f9-a2abd8adfcaf"
+	"name" "string" "Armature"
+	"children" "element_array"
+	[
+		"element" "81f6c7ac-987e-36be-8627-20f7e510c073",
+		"element" "47236b93-f553-356f-9ac0-d03caeeb2081"
+	]
+	"baseStates" "element_array"
+	[
+		"DmeTransformList"
+		{
+			"id" "elementid" "cd978beb-a18a-36da-b71b-6ce02aaaa576"
+			"name" "string" "base"
+			"transforms" "element_array"
+			[
+				"DmeTransform"
+				{
+					"id" "elementid" "72e728f2-53cf-3492-a51e-0c470659ecc6"
+					"name" "string" "Bone"
+					"position" "vector3" "0.0 0.0 0.0"
+					"orientation" "quaternion" "0.7071068286895752 0.0 0.0 0.7071068286895752"
+				},
+				"DmeTransform"
+				{
+					"id" "elementid" "62cadcb2-8da7-3c7d-b9a8-668e7c661a8e"
+					"name" "string" "Cube"
+					"position" "vector3" "0.0 0.0 0.0"
+					"orientation" "quaternion" "0.0 0.0 0.0 1.0"
+				}
+			]
+		}
+	]
+	"axisSystem" "DmeAxisSystem"
+	{
+		"id" "elementid" "12387b34-d180-3502-a6fe-ce0813baa7f4"
+		"name" "string" "axisSystem"
+		"upAxis" "int" "3"
+		"forwardParity" "int" "1"
+		"coordSys" "int" "0"
+	}
+	"transform" "DmeTransform"
+	{
+		"id" "elementid" "e71a8097-d422-378e-a7cf-a58a71eca05d"
+		"name" string
+		"position" "vector3" "0.0 0.0 0.0"
+		"orientation" "quaternion" "0.0 0.0 0.0 1.0"
+	}
+	"jointList" "element_array"
+	[
+		"element" "094e4572-7f24-34fc-b2f9-a2abd8adfcaf",
+		"element" "81f6c7ac-987e-36be-8627-20f7e510c073",
+		"element" "47236b93-f553-356f-9ac0-d03caeeb2081"
+	]
+}

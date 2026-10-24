@@ -12,3 +12,4 @@ __pycache__/
 /build-dev/
 /tests/blender/out/
 /tests/dmx/out/
+/dist/

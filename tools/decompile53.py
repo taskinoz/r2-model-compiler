@@ -118,8 +118,8 @@ def extract(d, p, frame, scale):
         return struct.unpack_from('<h', d, p + valid * 2)[0] * scale
 
 
-def decode_anim(d, m, bones, ai):
-    """Returns (desc, frames) with frames[f][bone] = (pos, matrix) local transforms."""
+def decode_anim(d, m, bones, ai, frame_indices=None):
+    """Return descriptor, name and local poses in the requested frame order."""
     h = m.hdr
     o = h['localanimindex'] + ai * 0x5C
     a = mdl53.u(mdl53.ANIMDESC_FIELDS, d, o)
@@ -127,7 +127,9 @@ def decode_anim(d, m, bones, ai):
     nf = a['numframes']
     delta = bool(a['flags'] & 4)
     frames = []
-    for f in range(nf):
+    for f in range(nf) if frame_indices is None else frame_indices:
+        if f < 0 or f >= nf:
+            raise ValueError('animation frame out of range: %d' % f)
         if a['sectionframes']:
             sf = a['sectionframes']
             if nf > sf and f == nf - 1:
@@ -189,6 +191,10 @@ def fmt(v):
     return '0.000000' if s == '-0.000000' else s
 
 
+def qc_quote(value):
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
 def write_smd(path, bones, skeleton_frames, tris=None):
     with open(path, 'w', newline='\n') as f:
         f.write('version 1\nnodes\n')
@@ -216,7 +222,8 @@ def write_smd(path, bones, skeleton_frames, tris=None):
 
 
 def decompile(path, outdir):
-    d = open(path, 'rb').read()
+    with open(path, 'rb') as source:
+        d = source.read()
     m = mdl53.Model(d)
     h = m.hdr
     os.makedirs(outdir, exist_ok=True)
@@ -430,7 +437,7 @@ def decompile(path, outdir):
         write_smd(os.path.join(outdir, smd), bones, skel)
         opts = ['fps %s' % fmt(a['fps'])]
         if a['flags'] & 1:
-            opts.append('loop')
+            opts.append('loop noforceloop')
         if delta:
             opts.append('// delta animation: decoded as raw deltas')
         anim_names.append(('a_' + name.replace('@', 'at_'), smd, opts, a))
@@ -455,7 +462,7 @@ def decompile(path, outdir):
         if act:
             lines.append('\tactivity "%s" %d' % (act, s['actweight']))
         if s['flags'] & 1:
-            lines.append('\tloop')
+            lines.append('\tloop noforceloop')
         if s['flags'] & 4:
             lines.append('\tdelta')
         if s['flags'] & 0x400:
@@ -471,8 +478,10 @@ def decompile(path, outdir):
             eo = o + s['eventindex'] + e * 0x50
             ev = mdl53.u(mdl53.EVENT_FIELDS, d, eo)
             ename = mdl53.cstr(d, eo + ev['szeventindex']) if ev['type'] else str(ev['event'])
-            frame = int(round(ev['cycle'] * max(1, first['numframes'] - 1)))
-            lines.append('\t{ event "%s" %d "%s" }' % (ename, frame, ev['options']))
+            # Retail Titan clips with one frame can store 0/0 (NaN) cycles.
+            # Their only possible source-frame event time is zero.
+            frame = 0 if first['numframes'] <= 1 else int(round(ev['cycle'] * (first['numframes'] - 1)))
+            lines.append('\t{ event %s %d %s }' % (qc_quote(ename), frame, qc_quote(ev['options'])))
         lines.append('}')
         qc.append('\n'.join(lines))
 
@@ -500,18 +509,27 @@ def decompile(path, outdir):
             if jointed:
                 nm = solid_names[si] if si < len(solid_names) else ''
                 bone = next((i for i, b in enumerate(bones) if b['name'].lower() == nm.lower()), 0)
-            for L in s['ledges']:
-                if L['has_children']:
-                    continue
+            pieces = [L for L in s['ledges'] if not L['has_children']]
+            for piece, L in enumerate(pieces):
+                # Collision-only normals encode one smoothing group per piece;
+                # geometry comes from the triangle positions. Distinct unit
+                # normals preserve even flush or overlapping convex pieces.
+                z = 1 - 2 * (piece + .5) / len(pieces)
+                radius = math.sqrt(max(0., 1 - z*z))
+                angle = piece * math.pi * (3 - math.sqrt(5))
+                piece_normal = (radius * math.cos(angle), radius * math.sin(angle), z)
                 for t in L['tris']:
                     tri = []
                     for c in (0, 2, 1):
-                        pt = pts[t['edges'][c]['start']]
+                        index = t['edges'][c]['start']
+                        pt, normal = pts[index], piece_normal
                         if jointed:
                             pt = transform(world[bone], pt)
+                            normal = rotate(world[bone], normal)
                         elif static:
                             pt = rotate(ROT_M90, pt)
-                        tri.append((pt, (0, 0, 1), (0, 0), [(bone, 1.0)]))
+                            normal = rotate(ROT_M90, normal)
+                        tri.append((pt, normal, (0, 0), [(bone, 1.0)]))
                     tris.append(('phys', tri))
         skel = [[(b['pos'], b['rot']) for b in bones]] if not static else [[((0, 0, 0), (0, 0, 0)) for b in bones]]
         write_smd(os.path.join(outdir, base + '_physics.smd'), bones, skel, tris)

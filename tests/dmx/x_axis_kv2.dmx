@@ -1,0 +1,141 @@
+<!-- dmx encoding keyvalues2 1 format model 22 -->
+"DmElement"
+{
+	"id" "elementid" "d2cf1451-8fb9-3988-82a0-3feb8bcae2ab"
+	"name" "string" "Scene"
+	"skeleton" "element" "094e4572-7f24-34fc-b2f9-a2abd8adfcaf"
+	"animationList" "DmeAnimationList"
+	{
+		"id" "elementid" "6461d404-1462-3cc4-ab24-a851efd23a71"
+		"name" "string" "Armature"
+		"animations" "element_array"
+		[
+			"DmeChannelsClip"
+			{
+				"id" "elementid" "70b40e00-3ae1-3701-b24c-24ff3c9c8800"
+				"name" "string" "X_Axis"
+				"timeFrame" "DmeTimeFrame"
+				{
+					"id" "elementid" "a69fa3b5-0406-36e1-960d-de7cc85d12aa"
+					"name" "string" "timeframe"
+					"duration" "time" "0.0833"
+					"scale" "float" "1.0"
+				}
+				"frameRate" "float" "24.0"
+				"channels" "element_array"
+				[
+					"DmeChannel"
+					{
+						"id" "elementid" "c9950610-4c61-387a-81ad-6bc0364fc976"
+						"name" "string" "Bone_p"
+						"toAttribute" "string" "position"
+						"toElement" "element" "df16898f-f7c6-30bb-bb2c-177de5c386e5"
+						"mode" "int" "1"
+						"log" "DmeVector3Log"
+						{
+							"id" "elementid" "ad9082f8-5c36-3e61-9284-d366f9b3e0a9"
+							"name" "string" "Vector3 log"
+							"layers" "element_array"
+							[
+								"DmeVector3LogLayer"
+								{
+									"id" "elementid" "9b26b860-028b-3da2-ba90-d9f55fcbd4eb"
+									"name" "string" "Vector3 log"
+									"times" "time_array" ["0.0", "0.0416", "0.0833"]
+									"values" "vector3_array" ["0.0 0.0 0.0", "1.0 0.0 0.0", "2.0 0.0 0.0"]
+								}
+							]
+						}
+					},
+					"DmeChannel"
+					{
+						"id" "elementid" "07d81398-22f8-3459-861f-960cdb44c63b"
+						"name" "string" "Bone_o"
+						"toAttribute" "string" "orientation"
+						"toElement" "element" "df16898f-f7c6-30bb-bb2c-177de5c386e5"
+						"mode" "int" "1"
+						"log" "DmeQuaternionLog"
+						{
+							"id" "elementid" "ea6432a1-840b-3807-9b69-589af9f41294"
+							"name" "string" "Quaternion log"
+							"layers" "element_array"
+							[
+								"DmeQuaternionLogLayer"
+								{
+									"id" "elementid" "c6a332f6-b04f-3dd4-8ba0-f43cad425d18"
+									"name" "string" "Quaternion log"
+									"times" "time_array" ["0.0"]
+									"values" "quaternion_array" ["0.7071068286895752 0.0 0.0 0.7071068286895752"]
+								}
+							]
+						}
+					}
+				]
+			}
+		]
+	}
+}
+
+"DmeJoint"
+{
+	"id" "elementid" "81f6c7ac-987e-36be-8627-20f7e510c073"
+	"name" "string" "Bone"
+	"transform" "element" "df16898f-f7c6-30bb-bb2c-177de5c386e5"
+	"children" "element_array" [ ]
+}
+
+"DmeModel"
+{
+	"id" "elementid" "094e4572-7f24-34fc-b2f9-a2abd8adfcaf"
+	"name" "string" "Armature"
+	"children" "element_array"
+	[
+		"element" "81f6c7ac-987e-36be-8627-20f7e510c073"
+	]
+	"baseStates" "element_array"
+	[
+		"DmeTransformList"
+		{
+			"id" "elementid" "cd978beb-a18a-36da-b71b-6ce02aaaa576"
+			"name" "string" "base"
+			"transforms" "element_array"
+			[
+				"DmeTransform"
+				{
+					"id" "elementid" "72e728f2-53cf-3492-a51e-0c470659ecc6"
+					"name" "string" "Bone"
+					"position" "vector3" "0.0 0.0 0.0"
+					"orientation" "quaternion" "0.7071068286895752 0.0 0.0 0.7071068286895752"
+				}
+			]
+		}
+	]
+	"axisSystem" "DmeAxisSystem"
+	{
+		"id" "elementid" "12387b34-d180-3502-a6fe-ce0813baa7f4"
+		"name" "string" "axisSystem"
+		"upAxis" "int" "3"
+		"forwardParity" "int" "1"
+		"coordSys" "int" "0"
+	}
+	"transform" "DmeTransform"
+	{
+		"id" "elementid" "e71a8097-d422-378e-a7cf-a58a71eca05d"
+		"name" string
+		"position" "vector3" "0.0 0.0 0.0"
+		"orientation" "quaternion" "0.0 0.0 0.0 1.0"
+	}
+	"jointList" "element_array"
+	[
+		"element" "094e4572-7f24-34fc-b2f9-a2abd8adfcaf",
+		"element" "81f6c7ac-987e-36be-8627-20f7e510c073"
+	]
+}
+
+"DmeTransform"
+{
+	"id" "elementid" "df16898f-f7c6-30bb-bb2c-177de5c386e5"
+	"name" "string" "Bone"
+	"position" "vector3" "0.0 0.0 0.0"
+	"orientation" "quaternion" "0.7071068286895752 0.0 0.0 0.7071068286895752"
+}

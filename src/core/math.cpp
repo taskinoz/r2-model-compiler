@@ -204,12 +204,42 @@ Quat QuaternionSlerp(const Quat& p, const Quat& q0, float t) {
 Vec3 MatrixScale(const Mat3x4& m) { return {Length(m.Column(0)), Length(m.Column(1)), Length(m.Column(2))}; }
 
 uint64_t PackQuaternion64(const Quat& q) {
-    auto enc = [](float v) -> uint64_t {
-        int i = static_cast<int>(v * 1048576.f) + 1048576;
-        return static_cast<uint64_t>(std::clamp(i, 0, 2097151));
-    };
-    uint64_t x = enc(q.x), y = enc(q.y), z = enc(q.z), wneg = q.w < 0 ? 1 : 0;
-    return x | (y << 21) | (z << 42) | (wneg << 63);
+    constexpr double scale = 1048576.5;
+    double target[4] = {q.x, q.y, q.z, q.w};
+    double length = std::sqrt(target[0]*target[0] + target[1]*target[1] + target[2]*target[2] + target[3]*target[3]);
+    if (length == 0) return PackQuaternion64(Quat(0, 0, 0, 1));
+    for (double& value : target) value /= length;
+    int base[3];
+    for (int i = 0; i < 3; ++i) base[i] = static_cast<int>(std::round(target[i] * scale)) + 1048576;
+    // W is reconstructed from XYZ. Near 180 degrees, independently rounding
+    // XYZ can turn one component unit into a large W error. Search neighbouring
+    // grid points for the closest decoded orientation instead.
+    double best = 1e30;
+    uint64_t packed = 0;
+    for (int dx = -1; dx <= 1; ++dx)
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dz = -1; dz <= 1; ++dz) {
+                int values[3] = {std::clamp(base[0]+dx, 0, 2097151), std::clamp(base[1]+dy, 0, 2097151),
+                                 std::clamp(base[2]+dz, 0, 2097151)};
+                double decoded[4], norm = 0;
+                for (int i = 0; i < 3; ++i) {
+                    decoded[i] = (values[i] - 1048576) / scale;
+                    norm += decoded[i]*decoded[i];
+                }
+                decoded[3] = std::sqrt(std::max(0., 1. - norm)) * (q.w < 0 ? -1. : 1.);
+                norm = std::sqrt(norm + decoded[3]*decoded[3]);
+                double error = 0;
+                for (int i = 0; i < 4; ++i) {
+                    double difference = decoded[i]/norm - target[i];
+                    error += difference*difference;
+                }
+                if (error < best) {
+                    best = error;
+                    packed = static_cast<uint64_t>(values[0]) | (static_cast<uint64_t>(values[1]) << 21) |
+                             (static_cast<uint64_t>(values[2]) << 42);
+                }
+            }
+    return packed | (static_cast<uint64_t>(q.w < 0) << 63);
 }
 
 Quat UnpackQuaternion64(uint64_t v) {

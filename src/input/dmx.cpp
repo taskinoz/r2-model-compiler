@@ -264,11 +264,13 @@ struct KV2 {
                 }
                 out += s[p++];
             }
+            if (p == s.size()) Fatal("DMX: unterminated keyvalues2 string");
             p++;
             return out;
         }
         size_t st = p;
-        while (p < s.size() && !std::isspace(static_cast<unsigned char>(s[p])) && s[p] != '{' && s[p] != '}') p++;
+        while (p < s.size() && !std::isspace(static_cast<unsigned char>(s[p])) &&
+               s[p] != '{' && s[p] != '}' && s[p] != '[' && s[p] != ']' && s[p] != ',') p++;
         return s.substr(st, p - st);
     }
     std::string Peek() {
@@ -354,6 +356,17 @@ Doc ParseKV2(const std::string& text, size_t headerEnd) {
             a.type = t;
             a.array = isArray;
             if (!isArray) {
+                // BST writes unnamed elements as `"name" string` with no value
+                // before the newline. Do not consume the following attribute.
+                if (name == "name" && t == AT::String) {
+                    size_t end = kv.p;
+                    while (end < text.size() && (text[end] == ' ' || text[end] == '\t' || text[end] == '\r')) ++end;
+                    if (end == text.size() || text[end] == '\n' || text[end] == '}') {
+                        a.strings.push_back("");
+                        doc.elems[idx].attrs[name] = std::move(a);
+                        continue;
+                    }
+                }
                 std::string v = kv.Tok();
                 if (name == "id" && IEquals(tname, "elementid")) {
                     doc.elems[idx].guid = v;
@@ -433,9 +446,9 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
     size_t he = head.find("-->");
     if (head.rfind("<!--", 0) != 0 || he == std::string::npos) Fatal("%s: not a DMX file", path.c_str());
     std::istringstream hs(head.substr(4, he - 4));
-    std::string w, enc, fmt;
+    std::string headerWord, enc, fmt;
     int encVer = 0, fmtVer = 0;
-    hs >> w >> w >> enc >> encVer >> w >> fmt >> fmtVer;
+    hs >> headerWord >> headerWord >> enc >> encVer >> headerWord >> fmt >> fmtVer;
     size_t headerEnd = he + 3;
     Doc doc;
     if (enc == "binary") {

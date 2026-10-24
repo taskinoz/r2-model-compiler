@@ -457,20 +457,24 @@ void KeyInt(std::string& s, const char* k, int v) { s += Format("\"%s\" \"%d\"\n
 void KeyStr(std::string& s, const char* k, const std::string& v) { s += Format("\"%s\" \"%s\"\n", k, v.c_str()); }
 void KeyFloat(std::string& s, const char* k, float v) { s += Format("\"%s\" \"%f\"\n", k, v); }
 
-// Splits faces into connected components by shared vertex positions.
-std::vector<std::vector<int>> ConnectedComponents(const std::vector<Vec3>& pos, const std::vector<std::array<int, 3>>& faces) {
+// Like studiomdl's BuildVertWeldTable: smoothing groups separate convex pieces
+// even when they touch at identical positions.
+std::vector<std::vector<int>> ConnectedComponents(const std::vector<Vec3>& pos, const std::vector<Vec3>& normals,
+                                                 const std::vector<std::array<int, 3>>& faces, float normalBlend) {
     std::vector<int> parent(pos.size());
     for (size_t i = 0; i < parent.size(); i++) parent[i] = static_cast<int>(i);
     std::function<int(int)> find = [&](int x) { return parent[x] == x ? x : parent[x] = find(parent[x]); };
     auto unite = [&](int a, int b) { parent[find(a)] = find(b); };
-    std::map<std::tuple<float, float, float>, int> weld;
+    std::map<std::tuple<float, float, float>, std::vector<int>> weld;
     for (size_t i = 0; i < pos.size(); i++) {
         auto key = std::make_tuple(pos[i].x, pos[i].y, pos[i].z);
-        auto it = weld.find(key);
-        if (it == weld.end())
-            weld[key] = static_cast<int>(i);
-        else
-            unite(static_cast<int>(i), it->second);
+        auto& candidates = weld[key];
+        for (int j : candidates)
+            if (Dot(normals[i], normals[j]) > normalBlend) {
+                unite(static_cast<int>(i), j);
+                break;
+            }
+        candidates.push_back(static_cast<int>(i));
     }
     for (auto& f : faces) {
         unite(f[0], f[1]);
@@ -521,6 +525,8 @@ void BuildCollisionModel(BuildContext& ctx) {
             for (size_t k = 0; k < bones.size(); k++) b2w[k] = bones[k].boneToPose;
         }
         std::vector<Vec3> world(inst->gverts.size());
+        std::vector<Vec3> normals;
+        for (auto& v : inst->gverts) normals.push_back(v.normal);
         for (size_t i = 0; i < inst->gverts.size(); i++) {
             Vec3 p;
             for (auto& w : inst->gverts[i].weights)
@@ -535,7 +541,7 @@ void BuildCollisionModel(BuildContext& ctx) {
         s.clientData = 0;
         s.surfaceProp = ctx.qc.surfaceProp;
         if (qc.concave) {
-            auto comps = ConnectedComponents(world, faces);
+            auto comps = ConnectedComponents(world, normals, faces, qc.weldNormal);
             for (auto& c : comps) {
                 if (c.size() < 3) continue;
                 std::vector<Vec3> pts;
@@ -605,12 +611,14 @@ void BuildCollisionModel(BuildContext& ctx) {
             s.surfaceProp = jointSurfaceProp(static_cast<int>(gb));
             if (qc.concavePerJoint) {
                 std::vector<int> vlist(verts.begin(), verts.end());
+                std::vector<Vec3> normals;
+                for (int v : vlist) normals.push_back(inst->gverts[v].normal);
                 std::vector<std::array<int, 3>> fl;
                 std::map<int, int> idx;
                 for (size_t i = 0; i < vlist.size(); i++) idx[vlist[i]] = static_cast<int>(i);
                 for (auto& f : inst->faces)
                     if (idx.count(f.v[0]) && idx.count(f.v[1]) && idx.count(f.v[2])) fl.push_back({idx[f.v[0]], idx[f.v[1]], idx[f.v[2]]});
-                for (auto& comp : ConnectedComponents(pts, fl)) {
+                for (auto& comp : ConnectedComponents(pts, normals, fl, qc.weldNormal)) {
                     std::vector<Vec3> cp;
                     for (int i : comp) cp.push_back(pts[i]);
                     Hull h;

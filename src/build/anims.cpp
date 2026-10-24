@@ -52,11 +52,11 @@ RadianEuler QuaternionMAAngles(const RadianEuler& p, float s, const RadianEuler&
 
 }  // namespace
 
-void BuildContext::CalcBoneTransforms(const WAnim& a, int frame, std::vector<Mat3x4>& out) const {
-    out.resize(bones.size());
+void BuildContext::CalcBoneTransforms(const WAnim& a, int frame, std::vector<Mat3x4>& transforms) const {
+    transforms.resize(bones.size());
     for (size_t k = 0; k < bones.size(); k++) {
         Mat3x4 bm = AngleMatrix(a.sanim[frame][k].rot, a.sanim[frame][k].pos);
-        out[k] = bones[k].parent == -1 ? bm : Concat(out[bones[k].parent], bm);
+        transforms[k] = bones[k].parent == -1 ? bm : Concat(transforms[bones[k].parent], bm);
     }
 }
 
@@ -537,7 +537,7 @@ void BuildContext::BuildAnimations() {
             sanim = sh;
         }
         // forceAnimationLoop
-        if (a.flags & STUDIO_LOOPING) {
+        if ((a.flags & STUDIO_LOOPING) && !(a.flags & STUDIO_NOFORCELOOP)) {
             int m = a.numFrames - 1;
             int type = a.motionType;
             for (int k = 0; k < nb; k++) {
@@ -656,8 +656,11 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
             pv[c].resize(nf);
             rv[c].resize(nf);
             for (int n = 0; n < nf; n++) {
-                pv[c][n] = static_cast<int16_t>(std::clamp(dpos[n][c] / posscale, -32768.f, 32767.f));
-                rv[c][n] = static_cast<int16_t>(std::clamp(drot[n][c] / bones[j].rotscale[c], -32768.f, 32767.f));
+                // Round rather than truncate: decoding and re-encoding an exact
+                // quantization level can otherwise lose one unit to float error.
+                // On long bone offsets a lost rotation unit is visibly amplified.
+                pv[c][n] = static_cast<int16_t>(std::clamp(std::round(dpos[n][c] / posscale), -32768.f, 32767.f));
+                rv[c][n] = static_cast<int16_t>(std::clamp(std::round(drot[n][c] / bones[j].rotscale[c]), -32768.f, 32767.f));
             }
         }
         std::vector<int16_t> ps[3], rs[3];
@@ -689,8 +692,29 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
             const BoneXf& b = a.sanim[f0][j];
             Quat q = AngleQuaternion(b.rot);
             if (!delta) q = QuaternionAlign(bones[j].qAlignment, q);
-            buf.PatchAt<uint64_t>(rec + 8, PackQuaternion64(q));
-            flags |= 0x04;
+            uint64_t packed = PackQuaternion64(q);
+            Quat decoded = UnpackQuaternion64(packed);
+            RadianEuler rleAngles;
+            for (int c = 0; c < 3; ++c)
+                rleAngles[c] = rv[c][0] * bones[j].rotscale[c] + (delta ? 0.f : bones[j].rot[c]);
+            Quat rle = AngleQuaternion(rleAngles);
+            auto error = [&](const Quat& value) {
+                double norm = std::sqrt(static_cast<double>(value.x)*value.x + static_cast<double>(value.y)*value.y +
+                                        static_cast<double>(value.z)*value.z + static_cast<double>(value.w)*value.w);
+                double dot = q.x*value.x + q.y*value.y + q.z*value.z + q.w*value.w;
+                double sign = dot < 0 ? -1. : 1.;
+                double dx = value.x/norm - sign*q.x, dy = value.y/norm - sign*q.y;
+                double dz = value.z/norm - sign*q.z, dw = value.w/norm - sign*q.w;
+                return dx*dx + dy*dy + dz*dz + dw*dw;
+            };
+            if (error(decoded) <= error(rle) + 1e-15) {
+                buf.PatchAt<uint64_t>(rec + 8, packed);
+                flags |= 0x04;
+            } else {
+                // Quaternion64 loses angular precision when its omitted W is
+                // almost zero. Constant RLE values retain the bone's precision.
+                animRot = true;
+            }
         } else {
             animRot = true;
         }
