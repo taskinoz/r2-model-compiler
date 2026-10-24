@@ -76,19 +76,32 @@ def summary(path):
     for i in range(h['numlocalseq']):
         o = h['localseqindex'] + i * 0xE8
         q = mdl53.u(mdl53.SEQDESC_FIELDS, d, o)
-        seqs.append((mdl53.cstr(d, o + q['szlabelindex']), q['numevents'], q['groupsize'][0], q['groupsize'][1]))
+        keys = ()
+        if q['posekeyindex'] and (q['groupsize'][0] > 1 or q['groupsize'][1] > 1):
+            n = q['groupsize'][0] + q['groupsize'][1]
+            keys = tuple(round(k, 2) for k in struct.unpack_from('<%df' % n, d, o + q['posekeyindex']))
+        seqs.append((mdl53.cstr(d, o + q['szlabelindex']), q['numevents'], q['groupsize'][0], q['groupsize'][1],
+                     q['flags'], keys))
     s['seqs'] = seqs
     anims = []
     for ai in range(h['numlocalanim']):
         a = mdl53.u(mdl53.ANIMDESC_FIELDS, d, h['localanimindex'] + ai * 0x5C)
         nf = a['numframes']
         sample = sorted({0, nf // 2, nf - 1}) if nf > 0 else []
-        a, name, frames = dc.decode_anim(d, m, bones, ai, sample)
+        a, name, frames = dc.decode_anim(d, m, bones, ai, sample, with_scale=True)
+        scales = {f: [tuple(e[2]) for e in pose] for f, pose in zip(sample, frames)}
+        frames = [[(e[0], e[1]) for e in pose] for pose in frames]
         fms = dc.decode_frame_movement(d, m, ai, sample)
         if fms is not None and not (a['flags'] & 4):
             frames = [dc.apply_root_motion(bones, fr, fm) for fr, fm in zip(frames, fms)]
-        anims.append({'frames': nf, 'delta': bool(a['flags'] & 4),
-                      'world': {f: world_positions(bones, pose) for f, pose in zip(sample, frames)}})
+        delta = bool(a['flags'] & 4)
+        # Delta animations are compared as raw local values (they are added onto a pose):
+        # the translation plus the rotation's basis vectors at a 50-unit lever.
+        def local_delta(pose):
+            return [tuple(p) + tuple(50 * rm[r][c] for r in range(3) for c in range(3)) for p, rm in pose]
+        anims.append({'frames': nf, 'delta': delta, 'flags': a['flags'], 'scale': scales,
+                      'world': {f: (local_delta(pose) if delta else world_positions(bones, pose))
+                                for f, pose in zip(sample, frames)}})
     s['anims'] = anims
     if h['phySize']:
         p = phylib.parse_phy(d[h['phyOffset']:h['phyOffset'] + h['phySize']])
@@ -131,6 +144,9 @@ def compare(a, b):
         issues.append('triangle counts %s vs %s' % (a['tris'][:6], b['tris'][:6]))
     if [x[0] for x in a['seqs']] != [x[0] for x in b['seqs']]:
         issues.append('sequence names differ')
+    elif [x[4:] for x in a['seqs']] != [x[4:] for x in b['seqs']]:
+        bad = [x[0] for x, y in zip(a['seqs'], b['seqs']) if x[4:] != y[4:]]
+        issues.append('sequence flags/pose keys differ (%d, e.g. %s)' % (len(bad), bad[0]))
     if len(a['anims']) != len(b['anims']):
         issues.append('anim count %d vs %d' % (len(a['anims']), len(b['anims'])))
     elif a['bones'] == b['bones']:
@@ -139,13 +155,24 @@ def compare(a, b):
             if x['frames'] != y['frames']:
                 issues.append('anim frames %d vs %d' % (x['frames'], y['frames']))
                 break
-            if x['delta']:
-                continue
+            if x['delta'] != y['delta']:
+                issues.append('delta flag differs on an animation')
+                break
+            if x.get('flags') != y.get('flags'):
+                issues.append('animation flags %s vs %s' % (hex(x.get('flags') or 0), hex(y.get('flags') or 0)))
+                break
             for f in x['world']:
                 for p, q in zip(x['world'][f], y['world'][f]):
                     worst = max(worst, math.dist(p, q))
         if worst > 0.25:
             issues.append('anim world positions off by %.2f' % worst)
+        sworst = 0.0
+        for x, y in zip(a['anims'], b['anims']):
+            for f in x.get('scale', {}):
+                for p, q in zip(x['scale'][f], y.get('scale', {}).get(f, [])):
+                    sworst = max(sworst, max(abs(u - v) for u, v in zip(p, q)))
+        if sworst > 0.01:
+            issues.append('bone scale off by %.3f' % sworst)
     if 'phy' in a:
         if 'phy' not in b:
             issues.append('phy missing')

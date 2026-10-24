@@ -174,6 +174,11 @@ std::shared_ptr<Source> LoadSMD(const std::string& path) {
                                   static_cast<float>(std::atof(tk[3].c_str())));
                     bf.rot = RadianEuler(static_cast<float>(std::atof(tk[4].c_str())), static_cast<float>(std::atof(tk[5].c_str())),
                                          static_cast<float>(std::atof(tk[6].c_str())));
+                    // r2-model-compiler extension: optional local scale "sx sy sz" after the
+                    // rotation (studiomdl reads only the first seven values)
+                    if (tk.size() >= 10)
+                        bf.scale = Vec3(static_cast<float>(std::atof(tk[7].c_str())), static_cast<float>(std::atof(tk[8].c_str())),
+                                        static_cast<float>(std::atof(tk[9].c_str())));
                 }
             }
             src->startFrame = startFrame < 0 ? 0 : startFrame;

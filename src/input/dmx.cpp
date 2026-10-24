@@ -509,6 +509,14 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
         Mat3x4 m = TransformOf(doc, doc.Child(joints[i], "transform"));
         bind[i].pos = m.Origin();
         bind[i].rot = MatrixAngles(m);
+        // optional bone scale (Source 2 style DmeTransform "scale": float or vector)
+        const Elem* tf = doc.Child(joints[i], "transform");
+        if (const Attr* sc = tf ? tf->Get("scale") : nullptr) {
+            if (sc->floats.size() >= 3)
+                bind[i].scale = Vec3(sc->floats[0], sc->floats[1], sc->floats[2]);
+            else if (sc->floats.size() == 1)
+                bind[i].scale = Vec3(sc->floats[0], sc->floats[0], sc->floats[0]);
+        }
     }
     for (size_t i = 0; i < src->bones.size(); i++) {
         Mat3x4 m = AngleMatrix(bind[i].rot, bind[i].pos);
@@ -698,7 +706,8 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
             std::vector<float> t;
             std::vector<float> v;
         };
-        std::map<int, Track> posTracks, rotTracks;
+        std::map<int, Track> posTracks, rotTracks, scaleTracks;
+        std::map<int, int> scaleComps;
         float maxTime = duration;
         for (auto* ch : doc.Children(clip, "channels")) {
             const Elem* to = doc.Child(ch, "toElement");
@@ -722,8 +731,12 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                 posTracks[b] = tr;
             else if (ta->strings[0] == "orientation")
                 rotTracks[b] = tr;
+            else if (ta->strings[0] == "scale") {
+                scaleTracks[b] = tr;
+                scaleComps[b] = values->Components();
+            }
         }
-        if (!posTracks.empty() || !rotTracks.empty()) {
+        if (!posTracks.empty() || !rotTracks.empty() || !scaleTracks.empty()) {
             int numFrames = static_cast<int>(std::lround(maxTime * fps)) + 1;
             src->frames.assign(numFrames, bind);
             auto sample = [](const Track& tr, float time, int comps, float* out) {
@@ -745,6 +758,12 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                 for (auto& pt : posTracks) {
                     float v[3];
                     if (sample(pt.second, time, 3, v)) src->frames[fi][pt.first].pos = Vec3(v[0], v[1], v[2]);
+                }
+                for (auto& st : scaleTracks) {
+                    float v[3];
+                    int comps = scaleComps[st.first] >= 3 ? 3 : 1;
+                    if (sample(st.second, time, comps, v))
+                        src->frames[fi][st.first].scale = comps == 3 ? Vec3(v[0], v[1], v[2]) : Vec3(v[0], v[0], v[0]);
                 }
                 for (auto& rt : rotTracks) {
                     float v[4];

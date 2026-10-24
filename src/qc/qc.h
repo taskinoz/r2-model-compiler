@@ -189,6 +189,7 @@ struct QcAnimation {
     int loopRestart = 0;
     bool fudgeLoop = false;
     bool noAutoIK = false;
+    bool rawDelta = false;  // "delta": source frames are local deltas (STUDIO_DELTA on the animation)
     bool implied = false;
     bool isOverride = false;  // $declareanimation
     std::vector<QcAnimCmd> cmds;
@@ -218,6 +219,7 @@ struct QcSequence {
     std::vector<QcEvent> events;
     std::string paramName[2];
     float paramStart[2] = {0, 0}, paramEnd[2] = {0, 0};
+    std::vector<float> poseKeys;  // explicit blend positions ("posekeys"); empty = evenly spaced
     std::string entryNode, exitNode;
     int nodeFlags = 0;
     float exitPhase = 0, entryPhase = 0;

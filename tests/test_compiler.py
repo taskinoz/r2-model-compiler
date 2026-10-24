@@ -88,6 +88,33 @@ class CompilerRegressions(unittest.TestCase):
                               .replace('"anim_', '"decompiled/anim_'), 'second')
         self.assertEqual(roundtrip.compare(roundtrip.summary(first), roundtrip.summary(second)), [])
 
+    def test_bone_scale_animation_roundtrips(self):
+        bones = [{'name':'root','parent':-1}, {'name':'tip','parent':0}]
+        bind = [((0,0,0),(0,0,0)), ((10,0,0),(0,0,0))]
+        dc.write_smd(self.work / 'body.smd', bones, [bind], cube((10,0,0),(0,0,1),1))
+        # animated scale on the tip; the SMD extension adds "sx sy sz" after the rotation
+        scales = [(1 + .5 * math.sin(i * .3), 1., 1 - .25 * i / 11) for i in range(12)]
+        dc.write_smd(self.work / 'grow.smd', bones,
+                     [[bind[0] + ((1,1,1),), bind[1] + (s,)] for s in scales])
+        dc.write_smd(self.work / 'still.smd', bones, [bind] * 3)
+        first = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n'
+                             '$sequence grow "grow.smd" fps 30\n$sequence still "still.smd" fps 30\n')
+        data = first.read_bytes()
+        model = mdl53.Model(data)
+        a, _, frames = dc.decode_anim(data, model, model.bones(), 0, with_scale=True)
+        self.assertTrue(a['flags'] & 0x20000)
+        for got, want in zip(frames, scales):
+            for g, w in zip(got[1][2], want):
+                self.assertAlmostEqual(g, w, delta=1 / 2048)
+        b, _, _ = dc.decode_anim(data, model, model.bones(), 1)
+        self.assertFalse(b['flags'] & 0x20000)
+        flags = [mdl53.u(mdl53.SEQDESC_FIELDS, data, model.hdr['localseqindex'] + i * 0xE8)['flags'] for i in range(2)]
+        self.assertEqual([f & 0x20000 for f in flags], [0x20000, 0])
+        qc = dc.decompile(first, self.work / 'decompiled')
+        second = self.compile(Path(qc).read_text().replace('"test_bp', '"decompiled/test_bp')
+                              .replace('"anim_', '"decompiled/anim_'), 'second')
+        self.assertEqual(roundtrip.compare(roundtrip.summary(first), roundtrip.summary(second)), [])
+
     def test_crowbar_command_line_and_output_path(self):
         # Crowbar sets the working directory to the QC folder, supplies the QC
         # basename, and passes -game plus its selected studiomdl options.

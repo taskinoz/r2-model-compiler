@@ -1,15 +1,16 @@
-# Tested Windows build — 24 October 2026
+# Tested Windows build — 25 October 2026
 
 This build is usable for Titanfall 2 static props, moving physics props and skinned,
-animated models. It is not a claim of complete Valve/Respawn feature parity.
+animated models, including Respawn root motion (frame movement) and bone scale
+animation. It is not a claim of complete Valve/Respawn feature parity.
 
 Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
-SHA-256: `4d5f04b9303acd9858fc53e5219d35302dbe7f685a2412de45e0097e405130be`.
+SHA-256: `d49faf389d1e4fb31017b7ae3c3643b917908193a052c3bc05faf6b1ce5affda`.
 
 ## Automated checks
 
-- Both CTest groups pass: the C++ collision hull suite and ten Python compiler/
-  corpus-runner regression tests.
+- Both CTest groups pass: the C++ collision hull suite and eleven Python compiler/
+  corpus-runner regression tests (including SMD bone-scale input).
 - Blender Source Tools exports from the same scene compile as SMD and binary DMX
   2, 3, 4, 5 and 9. All six outputs match in the compared fields, including two
   physics solids with total volume 24,576 cubic inches.
@@ -18,54 +19,44 @@ SHA-256: `4d5f04b9303acd9858fc53e5219d35302dbe7f685a2412de45e0097e405130be`.
 - A command-line test reproduces Crowbar's working directory, QC basename and
   studiomdl arguments, including a game path containing spaces. Crowbar's GUI
   itself has not been driven.
-- The release build was tested against the full corpus (see below for the exact build).
+- The exact release executable above was run against the full corpus.
 
 ## Retail corpus
 
 All **602/602** retail `mp_common` MDL v53 models decompiled and compiled without a
-compile failure or decompiler exception. With the stricter comparison below,
-**564/602** match every compared field.
+compile failure or decompiler exception. **564/602** match every compared field.
 
 Reports:
 
-- `test-output/release-corpus2/results.json` and `release-corpus2.log`: full run
-  (fresh decompile and compile) with the release build. It was built from this
-  source before a final comment/formatting-only edit; the final executable above
-  was re-checked with CTest and a five-model spot run (`test-output/final-spot`).
+- `test-output/release-corpus5/results.json` and `release-corpus5.log`: full run
+  (fresh decompile and compile) with the release executable above.
 - `test-output/corpus-heading` and `test-output/corpus-euler`: A/B runs of the two
   frame-movement yaw definitions (heading kept: 7 vs 9 animation differences).
 
 Reproduce a fresh run:
 
 ```powershell
-python tools
-oundtrip.py --jobs 8 --compiler build
-2studiomdl.exe --out test-outputresh path	o
-etail\models
+python tools\roundtrip.py --jobs 8 --compiler build\r2studiomdl.exe --out test-output\fresh path\to\retail\models
 ```
 
 To recompile existing, unedited exports with another build:
 
 ```powershell
-python tools
-echeck_corpus.py --from-report test-output
-elease-corpus2
-esults.json --compiler build
-2studiomdl.exe --jobs 8 --out test-output
-echeck
+python tools\recheck_corpus.py --from-report test-output\release-corpus5\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
 ```
 
 The recheck verifies input model size/timestamps and the exporter/comparison tool
 hashes. It assumes the cached QC/SMD exports have not been manually edited.
 
-Compared fields include bone names/parents, bind translations, texture names,
-triangle counts by LOD, sequence labels, animation frame counts and sampled
-non-delta world positions (with frame movement applied), physics solid
-counts/volume, attachment count, the map-collision header count, the
+Compared fields: bone names/parents, bind translations, texture names, triangle
+counts by LOD, sequence labels, sequence flags and blend pose keys, animation flags
+and frame counts, sampled world positions of non-delta animations (with frame
+movement applied), sampled raw local values of delta animations, sampled bone scale,
+physics solid counts/volume, attachment count, the map-collision header count, the
 face/plane/edge/vertex counts of every collision piece grouped by owning bone, and
-each bone's collision reference. Entry order within the block is not compared:
-retail jointed models order it by neither bone nor PHY solid. Animation samples are
-first, middle and last frames. This is not a byte-for-byte comparison.
+each bone's collision reference. Entry order within the collision block is not
+compared: retail jointed models order it by neither bone nor PHY solid. Animation
+samples are first, middle and last frames. This is not a byte-for-byte comparison.
 
 The 38 remaining differences are retained in the report:
 
@@ -98,12 +89,25 @@ Volumes and solid counts match. Neither kind is claimed lossless.
 - Retail and rebuilt grunt NPCs both converted into visible, collapsed ragdolls
   on the floor in the side-by-side screenshot. Individual joint-limit angles were
   not measured.
+- **Prowler pose and root motion** (`test-output/prowler-ingame/`): retail and
+  rebuilt `r2_prowler` side by side. In `pr_combat_run_forward` the ORIGIN,
+  CHESTFOCUS, HEADSHOT, foot and hand attachments agree within 0.002 units and
+  0.004 degrees. Played with `Anim_PlayWithRefPoint` (`--motion`), the entity origin
+  agrees within 0.013 units and yaw within 0.006 degrees, and the head attachment
+  within 0.01 units, over `pr_walk_turn180_left`, `pr_combat_run_forward` and the
+  23-second `pr_timeshift_campus_jumpscare`, which travels 13,867 units.
+- **Bone scale** (`test-output/scale-ingame/`): retail and rebuilt `drone_frag`
+  play `sd_closed_to_open`, whose scaled `def_c_scale_ball` carries the head lights.
+  `head_light_1` matches retail at every sample. A control built without scale
+  support is 21-23 units off at the start of the same sequence.
 
 Structured reports and screenshots are under `test-output/`:
 `physics-ingame-report.json`, `animation-ingame-report.json`,
 `character-ingame-report.json`, `ragdoll-ingame-report.json`,
-`physics-release-ingame.png`, `animation-release-ingame.png`, and
-`character-release-ingame.png`, and `ragdoll-release-control.png`.
+`prowler-ingame/report.json`, `prowler-ingame/report-pose.json`,
+`scale-ingame/report.json`, `scale-ingame/report-control.json`,
+`physics-release-ingame.png`, `animation-release-ingame.png`,
+`character-release-ingame.png` and `ragdoll-release-control.png`.
 
 ## Fixes in this continuation
 
@@ -118,11 +122,19 @@ Structured reports and screenshots are under `test-output/`:
 - Decompiler support for one-frame retail events with NaN cycle times.
 - Checkpointed/resumable parallel corpus runs and explicit in-game pass/fail reports.
 - Respawn frame-movement tracks (`rm`, and LX/LY/LZ/LZR extraction): wrapped yaw
-  from the root's heading, quantized before removal so the roots absorb the error.
-  The decompiler bakes retail tracks into the roots and emits `rm`. **Frame-movement
-  output has only been checked by round trip, not yet in game.**
-- Retail RLE rules: one posscale per bone per animation, raw one-frame chains, and
-  recovery of an existing quantization grid so decompiled input recompiles losslessly.
+  from the root's heading, quantized before removal so the roots absorb the error;
+  delta animations carry an all-zero track as retail does.
+- Retail RLE rules: one posscale per bone per animation, raw one-frame chains, no
+  all-null position records, and recovery of an existing quantization grid so
+  decompiled input recompiles losslessly.
+- Delta animations: decompiled deltas are compiled as deltas (`$animation ... delta`).
+  Previously they lost the delta flag, and autoplay head layers then reset the
+  prowler's root, so it lay on its side in game.
+- Blend pose keys (`posekeys`), `snap`, `local`, `worldspace`/`post` and
+  `noanimation`/`noanim_keepduration` survive decompilation. A named `$animation`'s
+  own flags are no longer copied onto its sequences, matching retail.
+- Bone scale animation: SMD/DMX input, raw or RLE encoding, HAS_SCALE flags.
+- Retail bone fields: zero qAlignment and 1/2048 scalescale.
 - Map-collision block for jointed models (bone references), bevels only where
   dot(n0, n1) < 0.26, at most 63 faces per piece, and retail bone references
   for models without physics.

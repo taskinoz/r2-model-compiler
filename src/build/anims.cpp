@@ -200,7 +200,7 @@ void BuildContext::BuildAnimations() {
         a.qc = qa;
         a.name = qa->name;
         a.fps = qa->fps;
-        a.flags = qa->flags;
+        a.flags = qa->flags | (qa->rawDelta ? STUDIO_DELTA : 0);
         a.motionType = qa->motionType;
         SrcInst* inst = Instance(qa->source, qa->sourceScale, false, false, qa->file);
         a.inst = inst;
@@ -219,8 +219,32 @@ void BuildContext::BuildAnimations() {
         a.numFrames = e - s + 1;
         a.startFrame = s - srcStart;
         a.sanim.resize(a.numFrames);
-        for (int j = 0; j < a.numFrames; j++)
-            ConvertAnimation(*inst, a.startFrame + j, qa->scale, qa->adjust, qa->rotation, a.sanim[j]);
+        for (int j = 0; j < a.numFrames; j++) {
+            if (qa->rawDelta) {
+                // "delta": the source already holds per-bone local deltas (as a decompiled
+                // delta animation does), so they skip the world-space conversion and the
+                // default root rotation; bones absent from the source get no delta.
+                a.sanim[j].assign(nb, BoneXf());
+                for (int k = 0; k < nb; k++) {
+                    int l = k < static_cast<int>(inst->globalToLocal.size()) ? inst->globalToLocal[k] : -1;
+                    if (l < 0) continue;
+                    const BoneFrame& bf = inst->frames[a.startFrame + j][l];
+                    a.sanim[j][k].pos = bf.pos * qa->scale;
+                    a.sanim[j][k].rot = bf.rot;
+                }
+            } else {
+                ConvertAnimation(*inst, a.startFrame + j, qa->scale, qa->adjust, qa->rotation, a.sanim[j]);
+            }
+            // bone scale is a local channel: taken straight from the source frame
+            for (int k = 0; k < nb; k++) {
+                int l = k < static_cast<int>(inst->globalToLocal.size()) ? inst->globalToLocal[k] : -1;
+                if (l >= 0) a.sanim[j][k].scale = inst->frames[a.startFrame + j][l].scale;
+            }
+        }
+        for (auto& fr : a.sanim)
+            for (auto& b : fr)
+                if (std::fabs(b.scale.x - 1) > 1e-4f || std::fabs(b.scale.y - 1) > 1e-4f || std::fabs(b.scale.z - 1) > 1e-4f)
+                    a.flags |= STUDIO_HAS_SCALE;
         if (qc.staticProp) {
             for (auto& b : a.sanim[0]) {
                 b.pos = Vec3();
@@ -615,9 +639,10 @@ void BuildContext::BuildAnimations() {
         // Respawn root motion. "rm" (rsx) extracts the root bones' exact yaw and
         // translation relative to frame 0; LX/LY/LZ/LZR extraction above produces a
         // fitted path. Either becomes a frame-movement track unless $legacymovement.
-        bool exactRootMotion = (a.qc->flags & STUDIO_FRAMEMOVEMENT) && moves.empty() && a.numFrames > 1 &&
+        bool exactRootMotion = (a.qc->flags & STUDIO_FRAMEMOVEMENT) && moves.empty() &&
                                !qc.staticProp && !qc.legacyMovement;
-        if (exactRootMotion) {
+        // Delta animations keep their root deltas and carry an all-zero track (as retail does).
+        if (exactRootMotion && !(a.flags & STUDIO_DELTA)) {
             // Retail's yaw is the heading of the root's local Z axis (forward after the
             // default 90 degree rotation) relative to frame 0; pitch and roll stay in the root.
             auto heading = [](const Mat3x4& m) { return std::atan2(m.m[1][2], m.m[0][2]); };
@@ -819,11 +844,38 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
                 if (rv[c][n] != rv[c][0]) rotConst = false;
             }
         }
-        if (posZero && rotZero) continue;
+        // Scale: raw (Vector48) unless it changes within the chain, then RLE values of
+        // (scale - bind scale) / scalescale (no bind scale for delta animations).
+        bool scaleIdentity = true, scaleConst = true;
+        for (int n = 0; n < nf; n++) {
+            const Vec3& s = a.sanim[f0 + n][j].scale;
+            const Vec3& s0 = a.sanim[f0][j].scale;
+            for (int c = 0; c < 3; c++) {
+                if (std::fabs(s[c] - 1) > 1e-4f) scaleIdentity = false;
+                if (std::fabs(s[c] - s0[c]) > 1e-6f) scaleConst = false;
+            }
+        }
+        std::vector<int16_t> ss[3];
+        bool animScale = !scaleIdentity && !scaleConst && nf > 1;
+        if (animScale) {
+            const float base = delta ? 0.f : 1.f, step = 1.f / 2048;  // bone scale and scalescale
+            for (int c = 0; c < 3; c++) {
+                std::vector<int16_t> v(nf);
+                for (int n = 0; n < nf; n++) {
+                    float q = std::round((a.sanim[f0 + n][j].scale[c] - base) / step);
+                    if (q > 32767 || q < -32768)
+                        Warn("animation %s: bone %s scale %g is out of range", a.name.c_str(), bones[j].name.c_str(),
+                             a.sanim[f0 + n][j].scale[c]);
+                    v[n] = static_cast<int16_t>(std::clamp(q, -32768.f, 32767.f));
+                }
+                ss[c] = EncodeRLE(v);
+            }
+        }
+        if (posZero && rotZero && scaleIdentity) continue;
 
         size_t rec = buf.Reserve(32);
         written++;
-        uint8_t flags = 0x08;  // RAWSCALE: Titanfall 2 always stores a raw scale
+        uint8_t flags = animScale ? 0x00 : 0x08;  // RAWSCALE unless the scale is animated
         if (delta) flags |= 0x01;
         buf.PatchAt<float>(rec + 0, posscale);
         buf.PatchAt<uint8_t>(rec + 4, static_cast<uint8_t>(j));
@@ -864,11 +916,10 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
             animRot = true;
         }
         // position: raw Vector48 only when half precision is good enough, except that
-        // retail one-frame chains always store it raw, even at the bind position
+        // retail one-frame chains always store it raw. Retail always stores a position,
+        // even at the bind position (never all-null value pointers).
         bool animPos = false;
-        if (posZero && nf > 1) {
-            // zero offsets: bind position
-        } else if (posConst || nf == 1) {
+        if (posConst || posZero || nf == 1) {
             Vec3 p = delta ? dpos[0] : a.sanim[f0][j].pos;
             bool ok = true;
             uint16_t h[3];
@@ -883,13 +934,18 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
                 animPos = true;
         } else
             animPos = true;
-        // scale (raw 1,1,1)
-        for (int c = 0; c < 3; c++) buf.PatchAt<uint16_t>(rec + 22 + c * 2, FloatToHalf(1.f));
+        // raw scale (1,1,1 unless the bone holds a constant scale here)
+        if (!animScale)
+            for (int c = 0; c < 3; c++)
+                buf.PatchAt<uint16_t>(rec + 22 + c * 2, FloatToHalf(scaleIdentity ? 1.f : a.sanim[f0][j].scale[c]));
 
         // animated value streams follow the record
+        // Retail never leaves all three value pointers null in an animated record (the
+        // game does not treat that as "bind pose"), so one explicit stream is kept.
         auto emit = [&](size_t ptrPos, std::vector<int16_t>* streams) {
+            bool allZero = StreamIsZero(streams[0]) && StreamIsZero(streams[1]) && StreamIsZero(streams[2]);
             for (int c = 0; c < 3; c++) {
-                if (StreamIsZero(streams[c])) {
+                if (StreamIsZero(streams[c]) && !(allZero && c == 0)) {
                     buf.PatchAt<int16_t>(ptrPos + c * 2, 0);
                     continue;
                 }
@@ -902,6 +958,7 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
         };
         if (animRot) emit(rec + 8, rs);
         if (animPos) emit(rec + 16, ps);
+        if (animScale) emit(rec + 22, ss);
         buf.PatchAt<uint8_t>(rec + 5, flags);
         buf.Align(4);
         if (prevRec != SIZE_MAX) buf.PatchI32(prevRec + 28, static_cast<int32_t>(rec - prevRec));
@@ -967,7 +1024,9 @@ void EncodeAnimations(BuildContext& ctx) {
         CAnimation ca;
         ca.name = a.name;
         ca.fps = a.fps;
-        ca.flags = a.flags;
+        // only the bits retail animation descriptors use (looping, snap, delta, all-zeros,
+        // 0x20000, frame movement); build-time flags such as noforceloop are not stored
+        ca.flags = a.flags & (0x1 | 0x2 | 0x4 | 0x20 | 0x20000 | STUDIO_FRAMEMOVEMENT);
         if (!a.frameMove.empty()) ca.frameMovement = EncodeFrameMovement(a.frameMove);
         else ca.flags &= ~STUDIO_FRAMEMOVEMENT;
         ca.numFrames = a.numFrames;

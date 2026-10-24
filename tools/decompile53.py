@@ -150,8 +150,11 @@ def apply_root_motion(bones, pose, fm):
     return out
 
 
-def decode_anim(d, m, bones, ai, frame_indices=None):
-    """Return descriptor, name and local poses in the requested frame order."""
+def decode_anim(d, m, bones, ai, frame_indices=None, with_scale=False):
+    """Return descriptor, name and local poses in the requested frame order.
+
+    Each pose entry is (pos, rotation matrix), or (pos, rotation matrix, scale) with
+    with_scale. Scale is bind scale + value * scalescale (no bind scale for deltas)."""
     h = m.hdr
     o = h['localanimindex'] + ai * 0x5C
     a = mdl53.u(mdl53.ANIMDESC_FIELDS, d, o)
@@ -200,19 +203,29 @@ def decode_anim(d, m, bones, ai, frame_indices=None):
                 if not delta:
                     pos = [pos[c] + b['pos'][c] for c in range(3)]
                 pos = tuple(pos)
-            pose[bone] = (pos, rm)
+            # scale
+            if flags & 0x08:
+                scl = tuple(half(x) for x in struct.unpack_from('<3H', d, r + 22))
+            else:
+                offs = struct.unpack_from('<3h', d, r + 22)
+                scl = [extract(d, r + 22 + offs[c] if offs[c] > 0 else None, lf, b['scalescale'][c]) for c in range(3)]
+                if not delta:
+                    scl = [scl[c] + b['scale'][c] for c in range(3)]
+                scl = tuple(scl)
+            pose[bone] = (pos, rm, scl) if with_scale else (pos, rm)
             nxt = struct.unpack_from('<i', d, r + 28)[0]
             if nxt == 0:
                 break
             r += nxt
         out = []
         for bi, b in enumerate(bones):
+            one = ((1.0, 1.0, 1.0),) if with_scale else ()
             if bi in pose:
                 out.append(pose[bi])
             elif delta:
-                out.append(((0.0, 0.0, 0.0), angle_matrix((0, 0, 0))))
+                out.append(((0.0, 0.0, 0.0), angle_matrix((0, 0, 0))) + one)
             else:
-                out.append((tuple(b['pos']), angle_matrix(b['rot'])))
+                out.append((tuple(b['pos']), angle_matrix(b['rot'])) + one)
         frames.append(out)
     return a, name, frames
 
@@ -235,8 +248,12 @@ def write_smd(path, bones, skeleton_frames, tris=None):
         f.write('end\nskeleton\n')
         for t, fr in enumerate(skeleton_frames):
             f.write('time %d\n' % t)
-            for i, (pos, rot) in enumerate(fr):
-                f.write('%d %s %s %s %s %s %s\n' % (i, fmt(pos[0]), fmt(pos[1]), fmt(pos[2]), fmt(rot[0]), fmt(rot[1]), fmt(rot[2])))
+            for i, entry in enumerate(fr):
+                pos, rot = entry[0], entry[1]
+                line = '%d %s %s %s %s %s %s' % (i, fmt(pos[0]), fmt(pos[1]), fmt(pos[2]), fmt(rot[0]), fmt(rot[1]), fmt(rot[2]))
+                if len(entry) > 2:  # optional local scale (r2-model-compiler SMD extension)
+                    line += ' %s %s %s' % tuple(fmt(v) for v in entry[2])
+                f.write(line + '\n')
         f.write('end\n')
         if tris is not None:
             f.write('triangles\n')
@@ -454,7 +471,11 @@ def decompile(path, outdir):
     # animations
     anim_names = []
     for ai in range(h['numlocalanim']):
-        a, name, frames = decode_anim(d, m, bones, ai)
+        a, name, frames = decode_anim(d, m, bones, ai, with_scale=True)
+        # bone scale goes into the SMD's optional scale columns, only for animations
+        # that use it (STUDIO_HAS_SCALE), so other exports stay plain studiomdl SMD
+        scales = [[e[2] for e in fr] for fr in frames] if a['flags'] & 0x20000 else None
+        frames = [[(e[0], e[1]) for e in fr] for fr in frames]
         delta = bool(a['flags'] & 4)
         fms = decode_frame_movement(d, m, ai, range(len(frames)))
         if fms is not None and not delta:
@@ -462,22 +483,29 @@ def decompile(path, outdir):
             frames = [apply_root_motion(bones, fr, fm) for fr, fm in zip(frames, fms)]
         smd = 'anim_%s.smd' % name.replace('@', 'at_').replace('/', '_').replace('\\', '_')
         skel = []
-        for fr in frames:
+        for fi, fr in enumerate(frames):
             row = []
             for bi, (pos, rm) in enumerate(fr):
                 if static:
                     row.append(((0, 0, 0), (0, 0, 0)))
                 else:
                     row.append(local_frame_to_smd(bi, pos, rm, root_fix=not delta))
+                if scales is not None:
+                    row[-1] = tuple(row[-1]) + (scales[fi][bi],)
             skel.append(row)
         write_smd(os.path.join(outdir, smd), bones, skel)
         opts = ['fps %s' % fmt(a['fps'])]
         if a['flags'] & 1:
             opts.append('loop noforceloop')
-        if fms is not None and not delta and not static:
+        if a['flags'] & 2:
+            opts.append('snap')
+        if fms is not None and not static:
             opts.append('rm')
         if delta:
-            opts.append('// delta animation: decoded as raw deltas')
+            opts.append('delta')  # frames are raw local deltas
+        if a['flags'] & 0x20:
+            # all-zero delta (retail flags 0x24); keep the frame count when there is one
+            opts.append('noanimation' if a['numframes'] <= 1 else 'noanim_keepduration')
         anim_names.append(('a_' + name.replace('@', 'at_'), smd, opts, a))
         qc.append('$animation "%s" "%s" %s' % (anim_names[-1][0], smd, ' '.join(o for o in opts if not o.startswith('//'))))
     # sequences
@@ -497,10 +525,30 @@ def decompile(path, outdir):
                     po = h['localposeparamindex'] + s['paramindex'][p] * 0x14
                     pn = mdl53.cstr(d, po + struct.unpack_from('<i', d, po)[0])
                     lines.append('\tblend "%s" %s %s' % (pn, fmt(s['paramstart'][p]), fmt(s['paramend'][p])))
+            # retail blend positions need not be evenly spaced (e.g. a neutral pose at 0)
+            nk = s['groupsize'][0] + s['groupsize'][1]
+            if s['posekeyindex']:
+                keys = struct.unpack_from('<%df' % nk, d, o + s['posekeyindex'])
+                even = []
+                for p in range(2):
+                    g = s['groupsize'][p]
+                    for k in range(g):
+                        f = k / (g - 1) if g > 1 else 0.0
+                        even.append(s['paramstart'][p] * (1 - f) + s['paramend'][p] * f)
+                if any(abs(a - b) > 1e-3 for a, b in zip(keys, even)):
+                    lines.append('\tposekeys %d %s' % (nk, ' '.join(fmt(k) for k in keys)))
         if act:
             lines.append('\tactivity "%s" %d' % (act, s['actweight']))
         if s['flags'] & 1:
             lines.append('\tloop noforceloop')
+        if s['flags'] & 2:
+            lines.append('\tsnap')
+        if s['flags'] & 0x200:
+            lines.append('\tlocal')
+        if s['flags'] & 0x4000:
+            lines.append('\tworldspace')  # also sets post
+        elif s['flags'] & 0x10 and not s['flags'] & 4:
+            lines.append('\tpost')
         if s['flags'] & 4:
             lines.append('\tdelta')
         if s['flags'] & 0x400:

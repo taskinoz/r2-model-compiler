@@ -54,6 +54,7 @@ struct GBone {
 struct BoneXf {
     Vec3 pos;
     RadianEuler rot;
+    Vec3 scale{1, 1, 1};  // local scale (raw delta for delta animations)
 };
 
 struct WAnim {

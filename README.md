@@ -79,7 +79,12 @@ models, runs a collision trace and captures a screenshot. For example:
 python tools\ingame_test.py --profile R2ModelTest --sequence bend out\model.mdl=models/r2c_test/model.mdl
 ```
 
-`--probe-attachment name` measures an attachment during playback. `--physics`
+`--probe-attachment name` measures an attachment during playback, and
+`--pose-attachments a,b,...` logs those attachments' origins and angles, which is a
+quick way to compare a rebuilt model's pose with the original side by side.
+`--motion seq1,seq2` plays each sequence with `Anim_PlayWithRefPoint`, so the
+entity follows the sequence's root motion, and records origin, yaw and the probe
+attachment at 0/25/50/75/95% of each sequence in the report. `--physics`
 spawns moving props above the floor and checks that they fall. `--report file.json`
 writes the validation result; missing spawns, script errors, timeouts and missing
 screenshots return a nonzero exit code. `--npc --ragdoll` exercises an NPC death
@@ -90,6 +95,21 @@ To create the Windows package after building and testing:
 ```powershell
 .\tools\package.ps1
 ```
+
+Bone scale: Respawn animations can scale bones. An SMD skeleton row may carry
+three extra values after the rotation, the bone's local x/y/z scale (default 1):
+`bone px py pz rx ry rz sx sy sz`. Valve's studiomdl reads only the first seven
+values, so such files still load elsewhere. DMX joints may use a `scale` attribute
+(float or vector) on their transform, animated through `scale` channels.
+Animations that scale any bone are flagged as retail ones are (0x20000), as are their
+sequences.
+
+Other QC options for Respawn data: `$animation ... delta` marks a source that already
+holds per-bone local deltas (as a decompiled delta animation does), and
+`$sequence { ... posekeys <count> <values...> }` sets explicit blend positions where
+retail blends are not evenly spaced. A named `$animation`'s own options (such as
+`loop`) are not copied onto the sequences that use it; options written inside the
+`$sequence` block are.
 
 Root motion: an `$animation`/`$sequence` with `rm` stores the root bones' yaw and
 translation as a Respawn frame-movement track, as retail models do; `LX`/`LY`/`LZ`/

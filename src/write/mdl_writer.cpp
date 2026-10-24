@@ -140,10 +140,11 @@ void MdlWriter::WriteBones() {
         f(0x48, bn.scale.x); f(0x4C, bn.scale.y); f(0x50, bn.scale.z);
         f(0x54, bn.posscale.x); f(0x58, bn.posscale.y); f(0x5C, bn.posscale.z);
         f(0x60, bn.rotscale.x); f(0x64, bn.rotscale.y); f(0x68, bn.rotscale.z);
-        f(0x6C, bn.scalescale.x); f(0x70, bn.scalescale.y); f(0x74, bn.scalescale.z);
+        // retail: scalescale is always 1/2048 and qAlignment is always zero
+        f(0x6C, 1.f / 2048); f(0x70, 1.f / 2048); f(0x74, 1.f / 2048);
         for (int r = 0; r < 3; r++)
             for (int c = 0; c < 4; c++) f(0x78 + (r * 4 + c) * 4, bn.poseToBone.m[r][c]);
-        f(0xA8, bn.qAlignment.x); f(0xAC, bn.qAlignment.y); f(0xB0, bn.qAlignment.z); f(0xB4, bn.qAlignment.w);
+        f(0xA8, 0.f); f(0xAC, 0.f); f(0xB0, 0.f); f(0xB4, 0.f);
         b_.PatchI32(p + 0xB8, bn.flags);
         b_.PatchI32(p + 0xBC, bn.proctype);
         b_.PatchI32(p + 0xC0, 0);  // procindex, patched below
@@ -570,7 +571,7 @@ void MdlWriter::WriteLinearBones() {
     b_.PatchI32(p + 0x20, Rel(p));
     for (auto& bn : m_.bones) b_.V3(bn.rotscale);
     b_.PatchI32(p + 0x24, Rel(p));
-    for (auto& bn : m_.bones) b_.Q(bn.qAlignment);
+    for (size_t i = 0; i < m_.bones.size(); i++) b_.Q(Quat(0, 0, 0, 0));  // retail: zero qAlignment
 }
 
 void MdlWriter::WritePerTri() {

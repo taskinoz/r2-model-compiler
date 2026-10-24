@@ -22,6 +22,7 @@ struct SrcBone {
 struct BoneFrame {
     Vec3 pos;
     RadianEuler rot;
+    Vec3 scale{1, 1, 1};  // local bone scale (Respawn animations only; SMD/DMX extension)
 };
 
 struct BoneWeight {

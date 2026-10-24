@@ -57,7 +57,9 @@ void function R2C_SpawnThread( entity player )
             bool hitProp = IsValid( tr.hitEnt ) && tr.hitEnt == prop
             printl( "[R2C] trace " + m + " hitProp=" + hitProp + " endZ=" + ( tr.endPos.z - pos.z ) )
             int seq = prop.LookupSequence( "%SEQ%" )
-            if ( seq >= 0 && !%PHYSICS% )
+            if ( %MOTION% )
+                thread R2C_Motion( prop, m, pos, < 0, player.EyeAngles().y + 180, 0 > )
+            else if ( seq >= 0 && !%PHYSICS% )
             {
                 prop.Anim_Play( "%SEQ%" )
                 printl( "[R2C] animation " + m + " sequence=%SEQ% index=" + seq )
@@ -75,6 +77,44 @@ void function R2C_SpawnThread( entity player )
     printl( "[R2C] spawn done" )
 }
 
+// Plays each sequence from the spawn point with Anim_PlayWithRefPoint, which moves
+// the entity by the sequence's root motion, and samples it at fixed fractions.
+void function R2C_Motion( entity prop, asset m, vector pos, vector ang )
+{
+    array<string> seqs = [ %MOTION_SEQS% ]
+    array<float> fractions = [ 0.0, 0.25, 0.5, 0.75, 0.95 ]
+    foreach ( string s in seqs )
+    {
+        if ( !IsValid( prop ) ) return
+        int seq = prop.LookupSequence( s )
+        if ( seq < 0 )
+        {
+            printl( "[R2C] MISSING sequence " + s + " on " + m )
+            continue
+        }
+        prop.SetOrigin( pos )
+        prop.SetAngles( ang )
+        float duration = prop.GetSequenceDuration( s )
+        prop.Anim_PlayWithRefPoint( s, pos, ang, 0.0 )
+        float start = Time()
+        foreach ( float f in fractions )
+        {
+            float target = start + f * duration
+            if ( target > Time() ) wait target - Time()
+            if ( !IsValid( prop ) ) return
+            vector o = prop.GetOrigin() - pos
+            float yaw = prop.GetAngles().y - ang.y
+            int a = prop.LookupAttachment( "%ATTACHMENT%" )
+            vector at = a > 0 ? prop.GetAttachmentOrigin( a ) - pos : < 0, 0, 0 >
+            printl( "[R2C] motion model=" + m + " seq=" + s + " frac=" + f + " t=" + ( Time() - start ) + " dur=" + duration
+                + " origin=" + o.x + "," + o.y + "," + o.z + " yaw=" + yaw + " attach=" + at.x + "," + at.y + "," + at.z )
+        }
+        prop.Anim_Stop()
+        wait 0.5
+    }
+    printl( "[R2C] motion done " + m )
+}
+
 void function R2C_PhysicsProbe( entity prop )
 {
     vector first = prop.GetOrigin()
@@ -88,6 +128,14 @@ void function R2C_Probe( entity prop )
 {
     wait 0.1
     if ( !IsValid( prop ) ) return
+    printl( "[R2C] pose angles=" + prop.GetAngles() )
+    array<string> poseAttachments = [ %POSE_ATTACHMENTS% ]
+    foreach ( string name in poseAttachments )
+    {
+        int a = prop.LookupAttachment( name )
+        if ( a > 0 )
+            printl( "[R2C] pose " + name + " origin=" + ( prop.GetAttachmentOrigin( a ) - prop.GetOrigin() ) + " angles=" + prop.GetAttachmentAngles( a ) )
+    }
     int attachment = prop.LookupAttachment( "%ATTACHMENT%" )
     if ( attachment <= 0 )
     {
@@ -156,9 +204,13 @@ def main():
     ap.add_argument("--lateral", type=float, default=0, help="offset the model group sideways for screenshots")
     ap.add_argument("--sequence", default="idle")
     ap.add_argument("--probe-attachment", default="", help="log attachment motion during the sequence")
+    ap.add_argument("--pose-attachments", default="", help="comma-separated attachments whose origin and angles "
+                    "are logged 0.1 s into the sequence (with --probe-attachment)")
     ap.add_argument("--ragdoll", action="store_true", help="convert spawned models to ragdolls after two seconds")
     ap.add_argument("--npc", action="store_true", help="apply models to soldier NPCs for death/ragdoll testing")
     ap.add_argument("--physics", action="store_true", help="spawn physical props above the floor and log their fall")
+    ap.add_argument("--motion", default="", help="comma-separated sequences to play with root motion and sample "
+                    "(origin, yaw and --probe-attachment at 0/25/50/75/95%% of each)")
     ap.add_argument("--shot-delay", type=float, default=12)
     ap.add_argument("--keep-open", action="store_true")
     ap.add_argument("--report", help="write a JSON validation report")
@@ -195,9 +247,13 @@ def main():
     sv = SERVER_SCRIPT.replace("%PRECACHE%", "\n".join(precache)).replace("%DIST%", str(a.dist)) \
         .replace("%SPACING%", str(a.spacing)).replace("%SEQ%", a.sequence)
     sv = sv.replace("%LATERAL%", str(a.lateral))
-    sv = sv.replace("%PROBE%", '            thread R2C_Probe( prop )' if a.probe_attachment else '') \
+    motion_seqs = [s for s in a.motion.split(',') if s]
+    sv = sv.replace("%MOTION_SEQS%", ', '.join('"%s"' % s for s in motion_seqs)) \
+        .replace("%MOTION%", 'true' if motion_seqs else 'false')
+    sv = sv.replace("%PROBE%", '            thread R2C_Probe( prop )' if a.probe_attachment and not motion_seqs else '') \
         .replace("%RAGDOLL%", '            thread R2C_Ragdoll( prop )' if a.ragdoll else '') \
-        .replace("%ATTACHMENT%", a.probe_attachment)
+        .replace("%ATTACHMENT%", a.probe_attachment) \
+        .replace("%POSE_ATTACHMENTS%", ', '.join('"%s"' % s for s in a.pose_attachments.split(',') if s))
     spawn = '        entity prop = CreatePropDynamic( m, pos, < 0, player.EyeAngles().y + 180, 0 >, SOLID_VPHYSICS )'
     if a.npc:
         spawn = '''        entity prop = CreateNPC( "npc_soldier", player.GetTeam(), pos, < 0, player.EyeAngles().y + 180, 0 > )
@@ -274,7 +330,16 @@ def main():
     drops = [float(value) for value in re.findall(r'\[R2C\] physics drop=([-+\d.eE]+)', log_text)]
     if a.physics and (len(drops) != len(a.models) or any(drop <= 0 for drop in drops)):
         failures.append('physics movement was not demonstrated')
-    report = {'success': not failures, 'failures': failures, 'spawns': spawns,
+    motion = []
+    for m in re.finditer(r'\[R2C\] motion model=(\S+) seq=(\S+) frac=([-\d.eE]+) t=([-\d.eE]+) dur=([-\d.eE]+) '
+                         r'origin=(\S+) yaw=([-\d.eE]+) attach=(\S+)', log_text):
+        motion.append({'model': m.group(1), 'sequence': m.group(2), 'fraction': float(m.group(3)),
+                       'time': float(m.group(4)), 'duration': float(m.group(5)),
+                       'origin': [float(v) for v in m.group(6).split(',')], 'yaw': float(m.group(7)),
+                       'attachment': [float(v) for v in m.group(8).split(',')]})
+    if motion_seqs and len(motion) != len(motion_seqs) * len(a.models) * 5:
+        failures.append('motion samples incomplete (%d)' % len(motion))
+    report = {'success': not failures, 'failures': failures, 'spawns': spawns, 'motion': motion,
               'physics_drop': drops, 'attachment_motion': [float(value) for value in
               re.findall(r'\[R2C\] attachment motion=([-+\d.eE]+)', log_text)],
               'logs': new_logs, 'screenshots': new_shots, 'models': a.models}

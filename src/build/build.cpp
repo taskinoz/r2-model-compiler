@@ -217,7 +217,9 @@ void BuildContext::BuildSequences() {
         s.label = qs.name;
         s.activityName = qs.activity;
         s.actWeight = qs.actWeight;
-        s.flags = qs.flags;
+        // Root motion is an animation property, and noforceloop only steers compilation;
+        // retail sequences never carry either bit (0x8000 changes the pose in game).
+        s.flags = qs.flags & ~(STUDIO_FRAMEMOVEMENT | STUDIO_NOFORCELOOP);
         s.groupSize[0] = qs.groupSize[0];
         s.groupSize[1] = qs.groupSize[1];
         s.fadeIn = qs.fadeIn;
@@ -238,6 +240,7 @@ void BuildContext::BuildSequences() {
             if (a < 0) Fatal("sequence %s: missing animation %s", qs.name.c_str(), qs.animations[i].c_str());
             int j = i % s.groupSize[0], k = i / s.groupSize[0];
             s.animIndices[k * s.groupSize[0] + j] = static_cast<int16_t>(a);
+            if (anims[a].flags & STUDIO_HAS_SCALE) s.flags |= STUDIO_HAS_SCALE;  // as retail sequences do
         }
         const WAnim& first = anims[s.animIndices[0]];
         // blends / pose keys
@@ -248,7 +251,11 @@ void BuildContext::BuildSequences() {
                 s.paramEnd[p] = qs.paramEnd[p];
             }
         }
-        if (s.groupSize[0] > 1 || s.groupSize[1] > 1) {
+        if (!qs.poseKeys.empty()) {
+            if (static_cast<int>(qs.poseKeys.size()) != s.groupSize[0] + s.groupSize[1])
+                Fatal("sequence %s: posekeys needs %d values", qs.name.c_str(), s.groupSize[0] + s.groupSize[1]);
+            s.poseKeys = qs.poseKeys;
+        } else if (s.groupSize[0] > 1 || s.groupSize[1] > 1) {
             for (int p = 0; p < 2; p++)
                 for (int m = 0; m < s.groupSize[p]; m++) {
                     float f = s.groupSize[p] > 1 ? static_cast<float>(m) / (s.groupSize[p] - 1) : 0.f;

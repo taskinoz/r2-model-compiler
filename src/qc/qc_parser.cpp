@@ -763,6 +763,10 @@ bool Parser::ParseAnimationToken(QcAnimation& a) {
         a.noAutoIK = false;
     } else if (Is("rm") || Is("rootmotion") || Is("framemovement")) {
         a.flags |= STUDIO_FRAMEMOVEMENT;
+    } else if (Is("delta")) {
+        // source frames are already local deltas (a decompiled delta animation); kept
+        // out of the flags so it is not copied onto sequences like an authored option
+        a.rawDelta = true;
     } else if (Is("defaultpose")) {
         // rsx marks animations that only hold the default pose; nothing to do
     } else if (ParseCmdlistToken(a.cmds)) {
@@ -890,6 +894,15 @@ void Parser::CmdSequence(bool declare) {
             seq.groupSize[0] = I("blendwidth");
             return true;
         }
+        if (Is("posekeys")) {
+            // r2-model-compiler extension: "posekeys <count> <values...>", explicit blend
+            // positions for axis 0 then axis 1 (retail blends need not be evenly spaced,
+            // e.g. a neutral pose at 0)
+            int n = I("pose key count");
+            seq.poseKeys.clear();
+            for (int k = 0; k < n; k++) seq.poseKeys.push_back(F("pose key"));
+            return true;
+        }
         if (Is("blend")) {
             int i = seq.paramName[0].empty() ? 0 : 1;
             seq.paramName[i] = S("pose parameter");
@@ -956,6 +969,10 @@ void Parser::CmdSequence(bool declare) {
         }
         if (Is("predelta")) {
             seq.flags |= STUDIO_DELTA;
+            return true;
+        }
+        if (Is("local")) {
+            seq.flags |= STUDIO_LOCAL;  // retail sets it on some blends without layers
             return true;
         }
         if (Is("autoplay")) {
@@ -1036,7 +1053,17 @@ void Parser::CmdSequence(bool declare) {
             seq.layers.push_back(l);
             return true;
         }
-        if (!anims.empty() && ParseAnimationToken(*anims[0])) return true;
+        if (!anims.empty()) {
+            // animation options in the sequence block apply to the first animation (as in
+            // studiomdl) and their flags to the sequence as well
+            int saved = anims[0]->flags;
+            anims[0]->flags = 0;
+            bool used = ParseAnimationToken(*anims[0]);
+            int added = anims[0]->flags;
+            anims[0]->flags = saved | added;
+            seq.flags |= added;
+            if (used) return true;
+        }
         // otherwise an animation reference: an existing $animation or a file
         int n = m_.FindAnimation(T());
         if (n >= 0)
@@ -1073,7 +1100,10 @@ void Parser::CmdSequence(bool declare) {
             anims[i]->motionType = anims[0]->motionType;
             for (auto& c : anims[0]->cmds) anims[i]->cmds.push_back(c);
         }
-        seq.flags |= anims[i]->flags;
+        // Options written inline in the sequence block apply to the sequence too; a named
+        // $animation's own options do not (retail: looping animations under non-looping
+        // sequences, e.g. pete_scripted_r1 CASUAL_idleA).
+        if (anims[i]->implied) seq.flags |= anims[i]->flags;
         seq.animations.push_back(anims[i]->name);
     }
     if (existing >= 0)
