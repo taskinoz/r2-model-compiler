@@ -220,6 +220,7 @@ struct QcSequence {
     std::string paramName[2];
     float paramStart[2] = {0, 0}, paramEnd[2] = {0, 0};
     std::vector<float> poseKeys;  // explicit blend positions ("posekeys"); empty = evenly spaced
+    std::string seqWeights;       // "seqweights": the sequence's own weight list (else max of its animations)
     std::string entryNode, exitNode;
     int nodeFlags = 0;
     float exitPhase = 0, entryPhase = 0;
@@ -241,6 +242,32 @@ struct QcJiggleBone {
     std::string bone;
     int flags = 0;
     float v[29] = {};  // mstudiojigglebone_t fields after flags, in file order
+};
+
+// $proceduralbones (studiomdl): axis interpolation (.txt "proceduralbones" blocks),
+// quaternion interpolation helpers and aim constraints (.vrd).
+struct QcAxisInterpBone {
+    std::string bone, control;
+    int axis = 0;  // 0..2 (the file uses 1..3)
+    Vec3 pos[6];
+    Quat quat[6];
+};
+
+struct QcQuatInterpTrigger {
+    float tolerance = 0;  // radians
+    Quat trigger, quat;
+    Vec3 pos;
+};
+
+struct QcQuatInterpBone {
+    std::string bone, parent, controlParent, control;
+    float percentage = 0;  // <display> distance / 100
+    std::vector<QcQuatInterpTrigger> triggers;
+};
+
+struct QcAimAtBone {
+    std::string bone, parent, aim;  // aim: an attachment name, else a bone
+    Vec3 aimVector, upVector, basePos;
 };
 
 struct QcCollisionJoint {
@@ -307,6 +334,9 @@ struct QcModelDef {
     std::vector<ForcedRealign> forcedRealign;
     std::vector<std::pair<std::string, int>> screenAlign;
     std::vector<QcJiggleBone> jiggleBones;
+    std::vector<QcAxisInterpBone> axisInterpBones;
+    std::vector<QcQuatInterpBone> quatInterpBones;
+    std::vector<QcAimAtBone> aimAtBones;
     std::vector<std::string> limitRotation;
 
     std::vector<QcAttachment> attachments;

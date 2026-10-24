@@ -182,6 +182,7 @@ void BuildContext::BuildAnimations() {
                 if (wl.posweight[j] < 0) wl.posweight[j] = wl.weight[j];
             }
     }
+    for (auto& wl : wls) weightLists[ToLower(wl.name)] = wl.weight;
     auto findWL = [&](const std::string& n) -> int {
         for (size_t i = 1; i < wls.size(); i++)
             if (IEquals(wls[i].name, n)) return static_cast<int>(i);
@@ -603,8 +604,9 @@ void BuildContext::BuildAnimations() {
                 break;
             }
             case QcAnimCmd::IKRULE:
+                break;  // compiled by ProcessIKRules once the poses are final
             case QcAnimCmd::IKFIXUP:
-                Warn("%s: ikrule/ikfixup are not compiled yet; ignored", a.name.c_str());
+                Warn("%s: ikfixup is not compiled yet; ignored", a.name.c_str());
                 break;
             default:
                 Warn("%s: animation command %d is not supported yet; ignored", a.name.c_str(), static_cast<int>(cmd.type));
@@ -998,6 +1000,297 @@ static std::vector<uint8_t> EncodeFrameMovement(const std::vector<Vec4>& fm) {
     return b.Data();
 }
 
+// ---------------------------------------------------------------------------
+// IK rules (studiomdl ProcessIKRules + CompressIKErrors)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct WorkRule {
+    const QcIKRule* src = nullptr;
+    int type = 0, chain = 0, slot = 0, bone = 0;
+    int start = 0, peak = 0, tail = 0, end = 0, contact = 0;
+    Vec3 pos;
+    Quat q = Quat(0, 0, 0, 0);  // studiomdl leaves it zeroed unless the rule type sets it
+    float height = 0, radius = 0, floor = 0, endHeight = 0;
+    std::string attachment;
+    std::vector<std::pair<Vec3, RadianEuler>> error;  // per frame from start
+};
+
+// Encodes a rule's per-frame errors as mstudiocompressedikerror_t: float scale[6],
+// short offset[6] (from the header), then one RLE stream per component.
+std::vector<uint8_t> CompressIKError(const std::vector<std::pair<Vec3, RadianEuler>>& error) {
+    Buffer b;
+    b.Reserve(36);
+    for (int k = 0; k < 6; k++) {
+        auto value = [&](size_t n) -> float {
+            if (k < 3) return error[n].first[k];
+            float v = error[n].second[k - 3];
+            while (v >= kPi) v -= 2 * kPi;
+            while (v < -kPi) v += 2 * kPi;
+            return v;
+        };
+        float minv = k < 3 ? -128.f : -kPi / 8, maxv = k < 3 ? 128.f : kPi / 8;
+        for (size_t n = 0; n < error.size(); n++) {
+            minv = std::min(minv, value(n));
+            maxv = std::max(maxv, value(n));
+        }
+        float scale = -minv > maxv ? minv / -32768.f : maxv / 32767.f;
+        b.PatchAt<float>(k * 4, scale);
+        std::vector<int16_t> v(error.size());
+        for (size_t n = 0; n < error.size(); n++)
+            v[n] = static_cast<int16_t>(std::clamp(std::round(value(n) / scale), -32768.f, 32767.f));
+        b.PatchAt<int16_t>(24 + k * 2, static_cast<int16_t>(b.Tell()));
+        for (int16_t s : EncodeRLE(v)) b.I16(s);
+    }
+    return b.Data();
+}
+
+}  // namespace
+
+void ProcessIKRules(BuildContext& ctx) {
+    const auto& chains = ctx.out.ikChains;
+    const int nb = static_cast<int>(ctx.bones.size());
+    for (auto& a : ctx.anims) {
+        std::vector<WorkRule> rules;
+        for (auto& cmd : a.qc->cmds) {
+            if (cmd.type != QcAnimCmd::IKRULE || !cmd.ikrule) continue;
+            const QcIKRule& q = *cmd.ikrule;
+            WorkRule r;
+            r.src = &q;
+            r.type = q.type;
+            r.chain = ctx.qc.FindIKChain(q.chain);
+            if (r.chain < 0) Fatal("%s: unknown chain \"%s\" in ikrule", a.name.c_str(), q.chain.c_str());
+            r.slot = q.slot >= 0 ? q.slot : r.chain;
+            r.start = q.start;
+            r.peak = q.peak;
+            r.tail = q.tail;
+            r.end = q.end;
+            r.contact = q.contact;
+            r.height = q.height;
+            r.radius = q.radius;
+            r.floor = q.floor;
+            r.endHeight = q.endHeight;
+            r.attachment = q.attachment;
+            if (q.hasFakeOrigin) r.pos = q.pos;
+            if (q.hasFakeRotate) r.q = q.q;
+            rules.push_back(r);
+        }
+        const int nf = a.numFrames;
+        auto findPrev = [&](size_t i) -> WorkRule& {
+            for (size_t n = 1; n < rules.size(); n++) {
+                size_t j = (i + rules.size() - n) % rules.size();
+                if (rules[j].chain == rules[i].chain) return rules[j];
+            }
+            return rules[i];
+        };
+        auto findNext = [&](size_t i) -> WorkRule& {
+            for (size_t n = 1; n < rules.size(); n++) {
+                size_t j = (i + n) % rules.size();
+                if (rules[j].chain == rules[i].chain) return rules[j];
+            }
+            return rules[i];
+        };
+        // Root motion from the contact frame to frame t, as a transform in frame t's space.
+        // studiomdl only offsets by the translation (calcMovement); Respawn's targets follow
+        // the whole frame-movement transform, yaw included (retail errors lock to 0 on plant).
+        auto motion = [&](int t, int contact) -> Mat3x4 {
+            if (a.frameMove.empty() || nf < 1) return Identity();
+            auto at = [&](int f) {
+                const Vec4& v = a.frameMove[std::clamp(f < nf ? f : f - nf, 0, nf - 1)];
+                return AngleMatrix(RadianEuler(0, 0, DegToRad(v.w)), Vec3(v.x, v.y, v.z));
+            };
+            return Concat(Invert(at(t)), at(contact));
+        };
+        // Frames past the end of a wrapped rule range: retail evaluates frame t - nf (pose and
+        // frame movement alike; a looping animation's frame 0 equals its last frame).
+        auto frameOf = [&](int t) { return std::clamp(t < nf ? t : t - nf, 0, nf - 1); };
+        std::vector<Mat3x4> boneToWorld;
+        auto pose = [&](const WorkRule& r, int t, int sourceFrame) {
+            if (r.src->useSource && a.inst) {
+                std::vector<Mat3x4> raw;
+                const auto& qa = *a.qc;
+                ctx.BuildRawTransforms(*a.inst, a.startFrame + frameOf(sourceFrame), qa.scale, qa.adjust, qa.rotation, raw);
+                ctx.TranslateAnimations(*a.inst, raw, boneToWorld);
+            } else {
+                ctx.CalcBoneTransforms(a, frameOf(t), boneToWorld);
+            }
+        };
+        for (size_t i = 0; i < rules.size(); i++) {
+            WorkRule& r = rules[i];
+            if (r.start == 0 && r.peak == 0 && r.tail == 0 && r.end == 0) r.tail = r.end = nf - 1;
+            if (r.start != -1 && r.peak == -1 && r.tail == -1 && r.end != -1) r.peak = r.tail = (r.start + r.end) / 2;
+            if (r.start != -1 && r.peak == -1 && r.tail != -1) r.peak = (r.start + r.tail) / 2;
+            if (r.peak != -1 && r.tail == -1 && r.end != -1) r.tail = (r.peak + r.end) / 2;
+            if (r.peak == -1) r.start = r.peak = 0;
+            if (r.tail == -1) r.tail = r.end = nf - 1;
+            if (r.contact == -1) r.contact = r.peak;
+            const int wrap = std::max(1, nf - 1);
+            if (r.start == -1) {
+                WorkRule& p = findPrev(i);
+                if (p.slot == r.slot) {
+                    r.start = r.peak < p.tail ? r.peak + (p.tail - r.peak) / 2 : r.peak + (p.tail - r.peak + nf - 1) / 2;
+                    r.start = (r.start + nf / 2) % wrap;
+                    p.end = (r.start + nf - 1) % wrap;
+                } else {
+                    r.start = p.tail;
+                    p.end = r.peak;
+                }
+            }
+            if (r.end == -1) {
+                WorkRule& n = findNext(i);
+                if (n.slot == r.slot) {
+                    n.start = n.peak < r.tail ? n.peak + (r.tail - n.peak) / 2 : n.peak + (r.tail - n.peak + nf - 1) / 2;
+                    n.start = (n.start + nf / 2) % wrap;
+                    r.end = (n.start + nf - 1) % wrap;
+                } else {
+                    n.start = r.tail;
+                    r.end = n.peak;
+                }
+            }
+            if (r.peak < r.start) r.peak += nf - 1;
+            if (r.tail < r.peak) r.tail += nf - 1;
+            if (r.end < r.tail) r.end += nf - 1;
+            if (r.contact < r.start) r.contact += nf - 1;
+
+            int numError = r.end - r.start + 1;
+            if (r.end >= nf) numError += 2;
+            if (r.src->useSequence)
+                Verbose("%s: ikrule usesequence evaluates the animation alone", a.name.c_str());
+            const int end = chains[r.chain].links[2].bone;
+            switch (r.type) {
+            case IK_SELF: {
+                r.bone = r.src->bone.empty() ? -1 : ctx.FindBone(r.src->bone);
+                if (!r.src->bone.empty() && r.bone < 0) Fatal("unknown bone '%s' in ikrule", r.src->bone.c_str());
+                for (int k = 0; k < numError; k++) {
+                    pose(r, k + r.start, k + r.start);
+                    Mat3x4 local = r.bone >= 0 ? Concat(Invert(boneToWorld[r.bone]), boneToWorld[end]) : boneToWorld[end];
+                    r.error.push_back({local.Origin(), MatrixAngles(local)});
+                }
+                break;
+            }
+            case IK_ATTACHMENT: {
+                if (r.src->bone.empty()) {
+                    if (!r.src->hasFakeOrigin && !r.src->hasFakeRotate) r.bone = end;
+                    else r.bone = -1;
+                } else {
+                    r.bone = ctx.FindBone(r.src->bone);
+                    if (r.bone < 0) Fatal("unknown bone '%s' in ikrule", r.src->bone.c_str());
+                }
+                if (r.bone >= 0) {
+                    pose(r, r.contact, r.contact);
+                    r.pos = boneToWorld[r.bone].Origin();
+                    r.q = AngleQuaternion(MatrixAngles(boneToWorld[r.bone]));
+                }
+                for (int k = 0; k < numError; k++) {
+                    int t = k + r.start;
+                    pose(r, t, t);
+                    Mat3x4 target = Concat(motion(t, r.contact), QuaternionMatrix(r.q, r.pos));
+                    Mat3x4 local = Concat(Invert(target), boneToWorld[end]);
+                    r.error.push_back({local.Origin(), MatrixAngles(local)});
+                }
+                break;
+            }
+            case IK_GROUND: {
+                const QcIKChain& qc = ctx.qc.ikChains[r.chain];
+                pose(r, r.contact, r.contact);
+                Vec3 footfall = Transform(boneToWorld[end], qc.center);
+                footfall.z = r.floor;
+                r.pos = footfall;
+                r.q = Quat(0, 0, 0, 1);
+                r.bone = 0;
+                for (int k = 0; k < numError; k++) {
+                    int t = k + r.start;
+                    pose(r, t, r.contact);  // studiomdl samples the contact frame for "usesource"
+                    Mat3x4 move = motion(t, r.contact);
+                    Vec3 p = Transform(move, r.pos);
+                    Vec3 cur = Transform(boneToWorld[end], qc.center);
+                    cur.z = p.z;
+                    if (t < r.start || t >= r.end) {
+                        p = cur;
+                    } else if (t < r.peak) {
+                        float s = static_cast<float>(r.peak - t) / (r.peak - r.start);
+                        s = 3 * s * s - 2 * s * s * s;
+                        p = p * (1 - s) + cur * s;
+                    } else if (t > r.tail) {
+                        float s = static_cast<float>(t - r.tail) / (r.end - r.tail);
+                        s = 3 * s * s - 2 * s * s * s;
+                        p = p * (1 - s) + cur * s;
+                    }
+                    Mat3x4 target = Concat(move, QuaternionMatrix(r.q));
+                    target.SetOrigin(p);
+                    Mat3x4 local = Concat(Invert(target), boneToWorld[end]);
+                    r.error.push_back({local.Origin(), MatrixAngles(local)});
+                }
+                break;
+            }
+            default:  // IK_RELEASE, IK_UNLATCH, IK_WORLD: no target data
+                r.bone = 0;
+                break;
+            }
+        }
+        // auto-release chains the animation moves but has no rule for
+        if (!(a.flags & STUDIO_DELTA) && !a.qc->noAutoIK) {
+            for (int c = 0; c < static_cast<int>(chains.size()); c++) {
+                bool used = false;
+                for (auto& r : rules) used |= r.chain == c;
+                int end = chains[c].links[2].bone;
+                if (used || end >= nb || a.weight[end] <= 0) continue;
+                WorkRule r;
+                r.type = IK_RELEASE;
+                r.chain = r.slot = c;
+                r.start = r.peak = 0;
+                r.tail = r.end = nf - 1;
+                r.contact = 0;
+                rules.push_back(r);
+            }
+        }
+        a.ikRules.clear();
+        for (auto& r : rules) {
+            CIKRule o;
+            o.type = r.type;
+            o.chain = r.chain;
+            o.bone = r.bone;
+            o.slot = r.slot;
+            o.height = r.height;
+            o.radius = r.radius;
+            o.floor = r.floor;
+            o.pos = r.pos;
+            o.q = r.q;
+            o.endHeight = r.endHeight;
+            o.attachment = r.attachment;
+            o.iStart = r.start;
+            if (nf > 1) {
+                const float d = nf - 1.f;
+                o.start = r.start / d;
+                o.peak = r.peak / d;
+                o.tail = r.tail / d;
+                o.end = r.end / d;
+                o.contact = r.contact / d;
+            } else {
+                o.start = o.peak = 0;
+                o.tail = o.end = 1;
+                o.contact = 0;
+            }
+            if (!r.error.empty()) o.compressedError = CompressIKError(r.error);
+            a.ikRules.push_back(std::move(o));
+        }
+    }
+    // per sequence: rule count is the largest of its animations; animations used by a
+    // sequence number their rules (others keep index 0, as studiomdl leaves them)
+    for (auto& s : ctx.out.sequences) {
+        s.numIKRules = 0;
+        for (int16_t ai : s.animIndices) s.numIKRules = std::max(s.numIKRules, static_cast<int>(ctx.anims[ai].ikRules.size()));
+        const auto& first = ctx.anims[s.animIndices[0]].ikRules;
+        for (int16_t ai : s.animIndices) {
+            auto& rules = ctx.anims[ai].ikRules;
+            if (rules.size() != first.size())
+                Warn("sequence %s: mismatched number of IK rules in its blends", s.label.c_str());
+            for (size_t n = 0; n < rules.size(); n++) rules[n].index = static_cast<int>(n);
+        }
+    }
+}
+
 void EncodeAnimations(BuildContext& ctx) {
     auto& bones = ctx.bones;
     const int nb = static_cast<int>(bones.size());
@@ -1031,6 +1324,7 @@ void EncodeAnimations(BuildContext& ctx) {
         else ca.flags &= ~STUDIO_FRAMEMOVEMENT;
         ca.numFrames = a.numFrames;
         ca.movements = a.movements;
+        ca.ikRules = a.ikRules;
         ca.bmin = a.bmin;
         ca.bmax = a.bmax;
         bool sectioned = a.numFrames >= sfMin && a.numFrames > sf && sf > 0;

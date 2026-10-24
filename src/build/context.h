@@ -116,6 +116,7 @@ public:
     void CalcBoneTransforms(const WAnim& a, int frame, std::vector<Mat3x4>& boneToWorld) const;
 
     std::map<SrcInst*, int> modelInstLods;  // unused helper
+    std::map<std::string, std::vector<float>> weightLists;  // expanded per-bone weights, by lower-case name
     std::vector<SrcInst*> bodyInsts;        // [model index across all bodyparts] -> LOD0 instance (nullptr for blank)
 };
 

@@ -36,6 +36,7 @@ struct CBone {
     int flags = 0;
     int proctype = 0;
     int jiggle = -1;  // index into CompiledModel::jiggles
+    std::vector<uint8_t> procData;  // other procedural types: the encoded struct (self-relative)
     int physicsBone = 0;
     int collisionIndex = -1, collisionCount = 0;  // entries in the map-collision block
     std::string surfaceProp;

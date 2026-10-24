@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <unordered_map>
@@ -118,6 +119,8 @@ private:
     void CmdCollision(bool joints);
     void CmdCollisionText();
     void CmdJiggleBone();
+    void CmdProceduralBones();
+    Vec3 helperBase_;  // current <basepos> while reading a .vrd file
     void CmdKeyValues(std::string& out);
     int ParseContents(int base);
     std::shared_ptr<QcAnimation> ImpliedAnimation(const std::string& seqName, const std::string& file);
@@ -527,6 +530,7 @@ void Parser::ParseIKRule(QcIKRule& r) {
             r.floor = m_.ikChains[c].floor;
             r.radius = m_.ikChains[c].radius;
         }
+        r.endHeight = -100;  // Respawn default: every retail footstep rule has endHeight -100
     } else if (IEquals(type, "attachment")) {
         r.type = IK_ATTACHMENT;
         r.attachment = S("attachment");
@@ -892,6 +896,12 @@ void Parser::CmdSequence(bool declare) {
         }
         if (Is("blendwidth")) {
             seq.groupSize[0] = I("blendwidth");
+            return true;
+        }
+        if (Is("seqweights")) {
+            // r2-model-compiler extension: Respawn sequences store a weight list that need
+            // not match their animations' encoding weights
+            seq.seqWeights = S("weightlist name");
             return true;
         }
         if (Is("posekeys")) {
@@ -1326,6 +1336,112 @@ enum JiggleField {
     J_BASEUPFRICTION, J_BASEMINFWD, J_BASEMAXFWD, J_BASEFWDFRICTION
 };
 
+// $proceduralbones "file": a .vrd file holds quaternion-interpolation helpers and aim
+// constraints, any other file axis-interpolation bones (studiomdl Load_ProceduralBones).
+void Parser::CmdProceduralBones() {
+    std::string name = S("procedural bones file");
+    std::string path = ResolveSource(name, "vrd");
+    if (path.empty()) Fatal("%s: could not find procedural bones file \"%s\"", tk_.Where().c_str(), name.c_str());
+    std::ifstream in(std::filesystem::u8path(path));
+    std::vector<std::vector<std::string>> lines;
+    for (std::string line; std::getline(in, line);) {
+        std::vector<std::string> t;
+        for (size_t i = 0; i < line.size();) {
+            if (std::isspace(static_cast<unsigned char>(line[i]))) { i++; continue; }
+            if (line[i] == '"') {
+                size_t e = line.find('"', i + 1);
+                if (e == std::string::npos) e = line.size();
+                t.push_back(line.substr(i + 1, e - i - 1));
+                i = e + 1;
+            } else {
+                size_t e = i;
+                while (e < line.size() && !std::isspace(static_cast<unsigned char>(line[e]))) e++;
+                t.push_back(line.substr(i, e - i));
+                i = e;
+            }
+        }
+        lines.push_back(t);
+    }
+    auto num = [&](const std::vector<std::string>& t, size_t i) {
+        if (i >= t.size()) Fatal("%s: missing value in procedural bone line", path.c_str());
+        return static_cast<float>(std::atof(t[i].c_str()));
+    };
+    auto vec = [&](const std::vector<std::string>& t, size_t i) { return Vec3(num(t, i), num(t, i + 1), num(t, i + 2)); };
+    auto degEuler = [&](const std::vector<std::string>& t, size_t i) {
+        return RadianEuler(DegToRad(num(t, i)), DegToRad(num(t, i + 1)), DegToRad(num(t, i + 2)));
+    };
+    helperBase_ = Vec3();
+    if (IEquals(GetExtension(path), "vrd")) {
+        QcQuatInterpBone* helper = nullptr;
+        QcAimAtBone* aim = nullptr;
+        for (auto& t : lines) {
+            if (t.empty()) continue;
+            const std::string& cmd = t[0];
+            if (IEquals(cmd, "<helper>") && t.size() >= 5) {
+                QcQuatInterpBone b;
+                b.bone = t[1];
+                b.parent = t[2];
+                b.controlParent = t[3];
+                b.control = t[4];
+                m_.quatInterpBones.push_back(b);
+                helper = &m_.quatInterpBones.back();
+                aim = nullptr;
+            } else if (IEquals(cmd, "<aimconstraint>") && t.size() >= 4) {
+                QcAimAtBone b;
+                b.bone = t[1];
+                b.parent = t[2];
+                b.aim = t[3];
+                m_.aimAtBones.push_back(b);
+                aim = &m_.aimAtBones.back();
+                helper = nullptr;
+            } else if (aim && IEquals(cmd, "<aimvector>")) {
+                aim->aimVector = Normalize(vec(t, 1));
+            } else if (aim && IEquals(cmd, "<upvector>")) {
+                aim->upVector = Normalize(vec(t, 1));
+            } else if (aim && IEquals(cmd, "<basepos>")) {
+                aim->basePos = vec(t, 1);
+            } else if (helper && IEquals(cmd, "<display>")) {
+                helper->percentage = num(t, 4) / 100.f;
+            } else if (helper && IEquals(cmd, "<basepos>")) {
+                helperBase_ = vec(t, 1);  // added to each following trigger's position
+            } else if (helper && IEquals(cmd, "<trigger>")) {
+                QcQuatInterpTrigger tr;
+                tr.tolerance = DegToRad(num(t, 1));
+                tr.trigger = AngleQuaternion(degEuler(t, 2));
+                tr.quat = AngleQuaternion(degEuler(t, 5));
+                tr.pos = helperBase_ + vec(t, 8);
+                helper->triggers.push_back(tr);
+            } else {
+                Fatal("%s: unable to parse procedural bone data \"%s\"", path.c_str(), cmd.c_str());
+            }
+        }
+    } else {
+        QcAxisInterpBone* axis = nullptr;
+        Vec3 base;
+        for (auto& t : lines) {
+            if (t.empty()) continue;
+            const std::string& cmd = t[0];
+            if (IEquals(cmd, "bone") && t.size() >= 6) {
+                QcAxisInterpBone b;
+                b.bone = t[1];
+                b.control = t[3];
+                b.axis = std::atoi(t[5].c_str()) - 1;  // the file uses 1..3
+                m_.axisInterpBones.push_back(b);
+                axis = &m_.axisInterpBones.back();
+            } else if (axis && IEquals(cmd, "basepos")) {
+                base = vec(t, 1);
+            } else if (axis && IEquals(cmd, "axis") && t.size() >= 8) {
+                int j = std::atoi(t[1].c_str());
+                if (j < 0 || j > 5) Fatal("%s: axis index %d out of range", path.c_str(), j);
+                axis->pos[j] = base + vec(t, 2);
+                // the file lists roll, pitch, yaw
+                axis->quat[j] = AngleQuaternion(QAngleToRadianEuler(num(t, 6), num(t, 7), num(t, 5)));
+            }
+            // "version", "proceduralbones", "display", "type", "end": nothing to keep
+        }
+    }
+}
+
 void Parser::CmdJiggleBone() {
     QcJiggleBone j;
     j.bone = S("bone");
@@ -1341,6 +1457,8 @@ void Parser::CmdJiggleBone() {
     j.v[J_BASEMASS] = 0;
     j.v[J_BASESTIFF] = 100;
     j.v[J_BASEDAMP] = 0;
+    j.v[J_BASEMINLEFT] = j.v[J_BASEMINUP] = j.v[J_BASEMINFWD] = -100;  // stored even without a base spring
+    j.v[J_BASEMAXLEFT] = j.v[J_BASEMAXUP] = j.v[J_BASEMAXFWD] = 100;
     if (!tk_.Get(true) || T() != "{") Fatal("%s: expected '{' for $jigglebone", tk_.Where().c_str());
     auto readSection = [&](const std::function<void(const std::string&)>& fn) {
         if (!tk_.Get(true) || T() != "{") Fatal("%s: expected '{'", tk_.Where().c_str());
@@ -1555,6 +1673,7 @@ void Parser::Register() {
         while (Avail()) tk_.Get(false);
     };
     h["$jigglebone"] = [&] { CmdJiggleBone(); };
+    h["$proceduralbones"] = [&] { CmdProceduralBones(); };
     h["$attachment"] = [&] { CmdAttachment(); };
     h["$hboxset"] = [&] {
         QcHitboxSet s;
@@ -1600,10 +1719,6 @@ void Parser::Register() {
     h["$cliptotextures"] = [&] {};
     h["$usedetailedweights"] = [&] { Warn("$usedetailedweights is an Apex Legends option; ignored"); };
     h["$maxverts"] = [&] { tk_.SkipRestOfCommand(); };
-    h["$proceduralbones"] = [&] {
-        S("file");
-        Warn("$proceduralbones (VRD) is not supported; ignored");
-    };
     h["$controller"] = [&] {
         tk_.SkipRestOfCommand();
         Warn("$controller is not supported by Titanfall 2 models; ignored");

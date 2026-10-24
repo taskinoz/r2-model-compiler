@@ -45,9 +45,8 @@ enum HdrOff : size_t {
 
 constexpr size_t kBoneSize = 0xF4, kJiggleSize = 0x78, kAttachSize = 0x5C, kHboxSetSize = 0x0C, kHboxSize = 0x44,
                  kAnimDescSize = 0x5C, kSeqDescSize = 0xE8, kEventSize = 0x50, kAutoLayerSize = 0x18, kIKLockSize = 0x20,
-                 kBodyPartSize = 0x10, kModelSize = 0x94, kMeshSize = 0x74, kIKChainSize = 0x20, kIKLinkSize = 0x1C,
-                 kPoseParamSize = 0x14, kModelGroupSize = 0x08, kTextureSize = 0x2C, kMovementSize = 0x2C,
-                 kIKRuleSize = 0x98;
+                 kBodyPartSize = 0x10, kModelSize = 0x94, kMeshSize = 0x74, kIKChainSize = 0x20, kIKLinkSize = 0x1C, kIKRuleSize = 0x8C,
+                 kPoseParamSize = 0x14, kModelGroupSize = 0x08, kTextureSize = 0x2C, kMovementSize = 0x2C;
 
 class MdlWriter {
 public:
@@ -158,8 +157,13 @@ void MdlWriter::WriteBones() {
     b_.Align(4);
     for (size_t i = 0; i < m_.bones.size(); i++) {
         const CBone& bn = m_.bones[i];
-        if (bn.jiggle < 0) continue;
         size_t p = base + i * kBoneSize;
+        if (!bn.procData.empty()) {
+            b_.PatchI32(p + 0xC0, Rel(p));
+            b_.Append(bn.procData);
+            continue;
+        }
+        if (bn.jiggle < 0) continue;
         b_.PatchI32(p + 0xC0, Rel(p));
         const CJiggle& j = m_.jiggles[bn.jiggle];
         b_.I32(j.flags);
@@ -259,6 +263,48 @@ void MdlWriter::WriteAnimations() {
                 b_.F32(mv.angle);
                 b_.V3(mv.vector);
                 b_.V3(mv.position);
+            }
+        }
+        if (!a.ikRules.empty()) {
+            // mstudioikrule_t (0x8C) array, then each rule's compressed error block;
+            // retail places this between the animation data and the frame movement
+            b_.Align(4);
+            b_.PatchI32(p + 0x24, static_cast<int>(a.ikRules.size()));
+            b_.PatchI32(p + 0x28, Rel(p));
+            size_t rules = b_.Reserve(kIKRuleSize * a.ikRules.size());
+            for (size_t j = 0; j < a.ikRules.size(); j++) {
+                const CIKRule& r = a.ikRules[j];
+                size_t q = rules + j * kIKRuleSize;
+                b_.PatchI32(q + 0x00, r.index);
+                b_.PatchI32(q + 0x04, r.type);
+                b_.PatchI32(q + 0x08, r.chain);
+                b_.PatchI32(q + 0x0C, r.bone);
+                b_.PatchI32(q + 0x10, r.slot);
+                b_.PatchAt<float>(q + 0x14, r.height);
+                b_.PatchAt<float>(q + 0x18, r.radius);
+                b_.PatchAt<float>(q + 0x1C, r.floor);
+                b_.PatchAt<float>(q + 0x20, r.pos.x);
+                b_.PatchAt<float>(q + 0x24, r.pos.y);
+                b_.PatchAt<float>(q + 0x28, r.pos.z);
+                b_.PatchAt<float>(q + 0x2C, r.q.x);
+                b_.PatchAt<float>(q + 0x30, r.q.y);
+                b_.PatchAt<float>(q + 0x34, r.q.z);
+                b_.PatchAt<float>(q + 0x38, r.q.w);
+                b_.PatchI32(q + 0x40, r.iStart);
+                b_.PatchAt<float>(q + 0x48, r.start);
+                b_.PatchAt<float>(q + 0x4C, r.peak);
+                b_.PatchAt<float>(q + 0x50, r.tail);
+                b_.PatchAt<float>(q + 0x54, r.end);
+                b_.PatchAt<float>(q + 0x58, r.contact);
+                b_.PatchAt<float>(q + 0x5C, r.drop);
+                b_.PatchAt<float>(q + 0x60, r.top);
+                if (!r.attachment.empty()) Str(q + 0x64, q, r.attachment);
+                b_.PatchAt<float>(q + 0x68, r.endHeight);
+                if (!r.compressedError.empty()) {
+                    b_.PatchI32(q + 0x3C, Rel(q));
+                    b_.Append(r.compressedError);
+                    b_.Align(4);
+                }
             }
         }
         if (!a.frameMovement.empty()) {

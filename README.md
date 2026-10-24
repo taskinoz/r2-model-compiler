@@ -111,11 +111,26 @@ retail blends are not evenly spaced. A named `$animation`'s own options (such as
 `loop`) are not copied onto the sequences that use it; options written inside the
 `$sequence` block are.
 
+Procedural bones: `$jigglebone` blocks, and studiomdl's `$proceduralbones` files: a
+`.vrd` file (`<helper>`/`<display>`/`<basepos>`/`<trigger>` quaternion-interpolation
+bones and `<aimconstraint>` aim-at-bone/attachment bones) or a `.txt` axis-interpolation
+file (`version 1` / `proceduralbones` / `bone ... axis` lines). The bones they drive
+are kept even without vertices. Titanfall 2 evaluates these on the client (rendering);
+server-side attachment queries do not see them.
+
+IK: `$ikchain` and the studiomdl `ikrule` animation option are compiled (touch,
+footstep, attachment, release and unlatch), including studiomdl's range inference
+for `.` values, per-frame target errors (footsteps follow the frame-movement track),
+their compressed streams, and automatic release rules for chains an animation moves
+without rules (`noautoik` turns that off). Footstep rules default to Respawn's
+`endheight -100`. `ikfixup` and IK locks on sequences are parsed; `ikfixup` is not
+compiled yet. `$weightlist` lists are honoured per animation, and a sequence's weights
+are the largest of its animations'.
+
 Root motion: an `$animation`/`$sequence` with `rm` stores the root bones' yaw and
 translation as a Respawn frame-movement track, as retail models do; `LX`/`LY`/`LZ`/
 `LZR` motion extraction is stored the same way. Add `$legacymovement` to the QC to
 write Valve-style piecewise movement records instead.
 
-Limitations: animation IK rules/fixups, procedural bones and UI panel meshes remain
-incomplete. Titanfall 1 and Apex model files are not direct compiler inputs;
+Limitations: `ikfixup` and UI panel meshes remain incomplete. Titanfall 1 and Apex model files are not direct compiler inputs;
 this tool consumes QC/SMD/DMX and targets Titanfall 2 v53 output.

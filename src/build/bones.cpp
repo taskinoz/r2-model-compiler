@@ -207,9 +207,25 @@ void BuildContext::BuildBones() {
                 if (IEquals(bm, s.bones[j].name)) s.boneflags[j] |= BONE_USED_BY_BONE_MERGE;
         // Later studiomdl versions keep procedural and screen-aligned bones even
         // without vertices; mark them so they survive.
-        for (auto& jb : qc.jiggleBones)
+        auto procedural = [&](const std::string& name) {
             for (size_t j = 0; j < s.bones.size(); j++)
-                if (IEquals(jb.bone, s.bones[j].name)) s.boneflags[j] |= BONE_ALWAYS_PROCEDURAL;
+                if (IEquals(name, s.bones[j].name)) s.boneflags[j] |= BONE_ALWAYS_PROCEDURAL;
+        };
+        for (auto& jb : qc.jiggleBones) procedural(jb.bone);
+        for (auto& b : qc.axisInterpBones) procedural(b.bone);
+        for (auto& b : qc.quatInterpBones) procedural(b.bone);
+        for (auto& b : qc.aimAtBones) procedural(b.bone);
+        // bones that drive procedural bones must survive even without vertices
+        auto keep = [&](const std::string& name) {
+            for (size_t j = 0; j < s.bones.size(); j++)
+                if (IEquals(name, s.bones[j].name)) s.boneflags[j] |= BONE_USED_BY_ATTACHMENT;
+        };
+        for (auto& b : qc.axisInterpBones) keep(b.control);
+        for (auto& b : qc.quatInterpBones) keep(b.control);
+        for (auto& b : qc.aimAtBones) {
+            keep(b.parent);
+            keep(b.aim);
+        }
         for (auto& sa : qc.screenAlign)
             for (size_t j = 0; j < s.bones.size(); j++)
                 if (IEquals(sa.first, s.bones[j].name)) s.boneflags[j] |= sa.second;
@@ -310,8 +326,10 @@ void BuildContext::BuildBones() {
             if (count > 1000) Fatal("circular bone hierarchy");
         } while (sorted);
     }
+    // parents inherit what their children are used by, not the children's own procedural or
+    // screen-align flags (else every ancestor of a jiggle bone would stop being animated)
     for (size_t k = 0; k < bones.size(); k++)
-        for (int n = bones[k].parent; n != -1; n = bones[n].parent) bones[n].flags |= bones[k].flags;
+        for (int n = bones[k].parent; n != -1; n = bones[n].parent) bones[n].flags |= bones[k].flags & BONE_USED_BY_ANYTHING;
 
     // --- CollapseBones ($collapsebones / $alwayscollapse)
     if (qc.collapseBones || !qc.alwaysCollapse.empty()) {

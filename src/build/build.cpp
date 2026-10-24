@@ -4,12 +4,14 @@
 #include <cmath>
 
 #include "build/context.h"
+#include "core/buffer.h"
 #include "core/log.h"
 #include "core/strings.h"
 
 namespace r2c {
 
 void EncodeAnimations(BuildContext& ctx);
+void ProcessIKRules(BuildContext& ctx);
 void BuildCollisionModel(BuildContext& ctx);
 void BuildPerTriAABB(BuildContext& ctx);
 
@@ -309,10 +311,16 @@ void BuildContext::BuildSequences() {
             if (c < 0) Fatal("unknown chain '%s' in sequence iklock", l.chain.c_str());
             s.ikLocks.push_back({c, l.posWeight, l.localQWeight, 0});
         }
-        // bone weights: max over blends
+        // bone weights: the sequence's own list ("seqweights"), else the max over blends
         s.weights.assign(bones.size(), 0.f);
-        for (int16_t ai : s.animIndices)
-            for (size_t n = 0; n < bones.size(); n++) s.weights[n] = std::max(s.weights[n], anims[ai].weight[n]);
+        if (!qs.seqWeights.empty()) {
+            auto it = weightLists.find(ToLower(qs.seqWeights));
+            if (it == weightLists.end()) Fatal("sequence %s: unknown weightlist '%s'", qs.name.c_str(), qs.seqWeights.c_str());
+            s.weights = it->second;
+        } else {
+            for (int16_t ai : s.animIndices)
+                for (size_t n = 0; n < bones.size(); n++) s.weights[n] = std::max(s.weights[n], anims[ai].weight[n]);
+        }
         // bounds: union over blends
         Vec3 bmin(9999, 9999, 9999), bmax(-9999, -9999, -9999);
         for (int16_t ai : s.animIndices) {
@@ -432,6 +440,81 @@ void BuildContext::FinalizeBones() {
         out.bones[k].flags |= BONE_ALWAYS_PROCEDURAL;
         out.jiggles.push_back(j);
     }
+    // other procedural bones (studiomdl TagProceduralBones / RemapProceduralBones / WriteBoneInfo)
+    auto procBone = [&](const std::string& name, const char* what) -> int {
+        int k = FindBone(name);
+        if (k < 0) Verbose("%s \"%s\" unused", what, name.c_str());
+        return k;
+    };
+    auto needBone = [&](const std::string& name, const std::string& owner) -> int {
+        int k = FindBone(name);
+        if (k < 0) Fatal("missing control bone \"%s\" for procedural bone \"%s\"", name.c_str(), owner.c_str());
+        return k;
+    };
+    auto quatOf = [](const Mat3x4& m) { return AngleQuaternion(MatrixAngles(m)); };
+    auto markChain = [&](int from, int flags) {
+        for (int k = from; k != -1; k = bones[k].parent) out.bones[k].flags |= flags;
+    };
+    for (auto& ax : qc.axisInterpBones) {
+        int k = procBone(ax.bone, "axisinterpbone");
+        if (k < 0) continue;
+        int control = needBone(ax.control, ax.bone);
+        Buffer b;
+        b.I32(control);
+        b.I32(ax.axis);
+        for (auto& p : ax.pos) b.V3(p);
+        for (auto& q : ax.quat) b.Q(q);
+        out.bones[k].proctype = 1;  // STUDIO_PROC_AXISINTERP
+        out.bones[k].procData = b.Data();
+        out.bones[k].flags |= BONE_ALWAYS_PROCEDURAL;
+    }
+    for (auto& qi : qc.quatInterpBones) {
+        int k = procBone(qi.bone, "quatinterpbone");
+        if (k < 0) continue;
+        int control = needBone(qi.control, qi.bone);
+        Buffer b;
+        b.I32(control);
+        b.I32(static_cast<int>(qi.triggers.size()));
+        b.I32(12);  // triggers follow the struct
+        for (auto& t : qi.triggers) {
+            Quat trigger = quatOf(Concat(QuaternionMatrix(t.trigger), bones[control].srcRealign));
+            Vec3 tmp = t.pos + bones[control].pos * qi.percentage;
+            Mat3x4 dest = Concat(QuaternionMatrix(t.quat, tmp), bones[k].srcRealign);
+            b.F32(t.tolerance > 0 ? 1.f / t.tolerance : 0.f);
+            b.Q(trigger);
+            b.V3(dest.Origin());
+            b.Q(quatOf(dest));
+        }
+        out.bones[k].proctype = 2;  // STUDIO_PROC_QUATINTERP
+        out.bones[k].procData = b.Data();
+        out.bones[k].flags |= BONE_ALWAYS_PROCEDURAL;
+        // MarkProceduralBoneChain: the control chain is used wherever the bone is
+        int used = out.bones[k].flags & BONE_USED_BY_ANYTHING;
+        markChain(control, used);
+        markChain(k, used);
+    }
+    for (auto& am : qc.aimAtBones) {
+        int k = procBone(am.bone, "<aimconstraint>");
+        if (k < 0) continue;
+        int parent = needBone(am.parent, am.bone);
+        int attach = -1;
+        for (size_t i = 0; i < out.attachments.size(); i++)
+            if (out.attachments[i].name == am.aim) attach = static_cast<int>(i);
+        int aim = attach >= 0 ? attach : FindBone(am.aim);
+        if (aim < 0) Fatal("missing aim control attachment or bone \"%s\" for procedural bone \"%s\"", am.aim.c_str(), am.bone.c_str());
+        Buffer b;
+        b.I32(parent);
+        b.I32(aim);
+        b.V3(am.aimVector);
+        b.V3(am.upVector);
+        b.V3(am.basePos);
+        out.bones[k].proctype = attach >= 0 ? 4 : 3;  // STUDIO_PROC_AIMATATTACH / AIMATBONE
+        out.bones[k].procData = b.Data();
+        out.bones[k].flags |= BONE_ALWAYS_PROCEDURAL;
+        int used = out.bones[k].flags & BONE_USED_BY_ANYTHING;
+        markChain(parent, used);
+        if (attach < 0) markChain(aim, used);
+    }
     for (auto& bf : qc.boneFollowers) {
         int k = FindBone(bf);
         if (k < 0)
@@ -480,6 +563,7 @@ CompiledModel Build(QcModelDef& qc) {
     ctx.BuildHitboxes();
     ctx.BuildBounds();
     ctx.BuildSequences();
+    ProcessIKRules(ctx);
     EncodeAnimations(ctx);
     ctx.BuildSkins();
     ctx.FinalizeBones();

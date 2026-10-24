@@ -115,6 +115,93 @@ class CompilerRegressions(unittest.TestCase):
                               .replace('"anim_', '"decompiled/anim_'), 'second')
         self.assertEqual(roundtrip.compare(roundtrip.summary(first), roundtrip.summary(second)), [])
 
+    def test_ik_rules_compile_and_roundtrip(self):
+        bones = [{'name':'root','parent':-1}, {'name':'hip','parent':0},
+                 {'name':'knee','parent':1}, {'name':'foot','parent':2}]
+        bind = [((0,0,0),(0,0,0)), ((0,0,30),(0,0,0)), ((0,0,-15),(0,0,0)), ((0,0,-15),(0,0,0))]
+        dc.write_smd(self.work / 'body.smd', bones, [bind], cube((0,0,0),(0,0,1),3))
+        # a foot that lifts and plants while the knee swings
+        frames = [[bind[0], bind[1], ((0,0,-15),(.4 * math.sin(i * .5),0,0)),
+                   ((0,0,-15 + 3 * max(0, math.sin(i * .5))),(0,0,0))] for i in range(13)]
+        dc.write_smd(self.work / 'walk.smd', bones, frames)
+        qc = ('$modelname "test.mdl"\n$body body "body.smd"\n'
+              '$ikchain "leg" "foot" knee 1 0 0\n'
+              '$animation walk "walk.smd" fps 30 loop ikrule "leg" footstep range 0 2 6 8 contact 4 '
+              'height 50 radius 15 floor 0\n'
+              '$animation still "walk.smd" fps 30\n'
+              '$sequence walk walk\n$sequence still still\n')
+        first = self.compile(qc)
+        data = first.read_bytes()
+        model = mdl53.Model(data)
+        walk = dc.decode_ik_rules(data, model.hdr, 0)
+        self.assertEqual([r['type'] for r in walk], [3])
+        self.assertTrue(walk[0]['compressedikerrorindex'])
+        self.assertAlmostEqual(walk[0]['endHeight'], -100)
+        self.assertEqual([round(walk[0][x] * 12) for x in ('start','peak','tail','end','contact')], [0,2,6,8,4])
+        # automatic release for a chain the animation moves without rules
+        self.assertEqual([r['type'] for r in dc.decode_ik_rules(data, model.hdr, 1)], [4])
+        qc2 = dc.decompile(first, self.work / 'decompiled')
+        second = self.compile(Path(qc2).read_text().replace('"test_bp', '"decompiled/test_bp')
+                              .replace('"anim_', '"decompiled/anim_'), 'second')
+        self.assertEqual(roundtrip.compare(roundtrip.summary(first), roundtrip.summary(second)), [])
+
+    def write_procedural_model(self, folder, procedural=True):
+        """Driver bone turns 90 degrees; follower (quatinterp), aimer (aim at target) and
+        axisbone (axisinterp) react. Attachments expose the results."""
+        folder.mkdir(parents=True, exist_ok=True)
+        bones = [{'name':'root','parent':-1}, {'name':'driver','parent':0}, {'name':'follower','parent':0},
+                 {'name':'aimer','parent':0}, {'name':'target','parent':0}, {'name':'axisbone','parent':0}]
+        bind = [((0,0,0),(0,0,0)), ((0,0,20),(0,0,0)), ((10,0,20),(0,0,0)),
+                ((-10,0,20),(0,0,0)), ((-10,30,20),(0,0,0)), ((0,10,20),(0,0,0))]
+        geo = cube((0,0,0),(0,0,1),0) + cube((10,0,20),(0,0,1),2) + cube((-10,0,20),(0,0,1),3)
+        dc.write_smd(folder / 'body.smd', bones, [bind], geo)
+        frames = []
+        for i in range(31):
+            f = list(bind)
+            f[1] = ((0,0,20),(0,0,math.radians(3 * i)))      # driver yaw 0 -> 90
+            f[4] = ((-10,30,20 + i),(0,0,0))                 # target rises 30 units
+            frames.append(f)
+        dc.write_smd(folder / 'turn.smd', bones, frames)
+        (folder / 'proc.vrd').write_text(
+            '<helper> follower root root driver\n<display> 1 1 1 0\n<basepos> 0 0 0\n'
+            '<trigger> 90 0 0 0 0 0 0 10 0 20\n<trigger> 90 0 0 90 0 0 0 10 0 40\n'
+            '<aimconstraint> aimer root target\n<aimvector> 1 0 0\n<upvector> 0 0 1\n<basepos> 0 0 0\n')
+        (folder / 'axis.txt').write_text(
+            'version 1\nproceduralbones\nbone "axisbone" "root" "driver" "root" 3\nbasepos 0 0 0\n' +
+            ''.join('axis %d 0 10 %d 0 0 0\n' % (k, 20 + k) for k in range(6)) + 'end\n')
+        qc = ('$modelname "proc.mdl"\n$body body "body.smd"\n'
+              '$attachment "follower_att" "follower" 0 0 0\n$attachment "aimer_tip" "aimer" 10 0 0\n'
+              '$attachment "driver_tip" "driver" 10 0 0\n$attachment "target_att" "target" 0 0 0\n'
+              '$sequence turn "turn.smd" fps 10\n')
+        if procedural:
+            qc += '$proceduralbones "proc.vrd"\n$proceduralbones "axis.txt"\n'
+        (folder / 'proc.qc').write_text(qc)
+        return folder / 'proc.qc'
+
+    def test_procedural_bones_compile_and_roundtrip(self):
+        qc = self.write_procedural_model(self.work / 'proc')
+        output = self.work / 'proc.mdl'
+        run = subprocess.run([str(self.compiler), '-quiet', '-o', str(output), str(qc)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        data = output.read_bytes()
+        model = mdl53.Model(data)
+        bones = {b['name']: (i, b) for i, b in enumerate(model.bones())}
+        self.assertEqual({n: bones[n][1]['proctype'] for n in ('follower', 'aimer', 'axisbone')},
+                         {'follower': 2, 'aimer': 3, 'axisbone': 1})
+        follower = dc.decode_procedural(data, model.hdr, *bones['follower'])
+        self.assertEqual(follower['control'], bones['driver'][0])
+        self.assertEqual(len(follower['triggers']), 2)
+        self.assertAlmostEqual(follower['triggers'][1]['pos'][2], 40, places=3)
+        aimer = dc.decode_procedural(data, model.hdr, *bones['aimer'])
+        self.assertEqual(aimer['aim'], bones['target'][0])
+        self.assertTrue(bones['follower'][1]['flags'] & 0x04)
+        qc2 = dc.decompile(output, self.work / 'decompiled')
+        second = self.compile(Path(qc2).read_text().replace('"proc_bp', '"decompiled/proc_bp')
+                              .replace('"anim_', '"decompiled/anim_')
+                              .replace('"proc_procedural.vrd', '"decompiled/proc_procedural.vrd')
+                              .replace('"proc_axisinterp.txt', '"decompiled/proc_axisinterp.txt'), 'second')
+        self.assertEqual(roundtrip.compare(roundtrip.summary(output), roundtrip.summary(second)), [])
+
     def test_crowbar_command_line_and_output_path(self):
         # Crowbar sets the working directory to the QC folder, supplies the QC
         # basename, and passes -game plus its selected studiomdl options.

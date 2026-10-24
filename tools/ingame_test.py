@@ -142,6 +142,15 @@ void function R2C_Probe( entity prop )
         printl( "[R2C] MISSING probe attachment %ATTACHMENT%" )
         return
     }
+    float start = Time() - 0.1
+    array<float> probeTimes = [ %PROBE_TIMES% ]
+    foreach ( float t in probeTimes )
+    {
+        if ( start + t > Time() ) wait start + t - Time()
+        if ( !IsValid( prop ) ) return
+        vector o = prop.GetAttachmentOrigin( attachment ) - prop.GetOrigin()
+        printl( "[R2C] probe model=" + prop.GetModelName() + " t=" + t + " origin=" + o.x + "," + o.y + "," + o.z )
+    }
     vector first = prop.GetAttachmentOrigin( attachment )
     wait 0.4
     if ( !IsValid( prop ) ) return
@@ -204,6 +213,7 @@ def main():
     ap.add_argument("--lateral", type=float, default=0, help="offset the model group sideways for screenshots")
     ap.add_argument("--sequence", default="idle")
     ap.add_argument("--probe-attachment", default="", help="log attachment motion during the sequence")
+    ap.add_argument("--probe-times", default="", help="comma-separated seconds at which to log the probe attachment")
     ap.add_argument("--pose-attachments", default="", help="comma-separated attachments whose origin and angles "
                     "are logged 0.1 s into the sequence (with --probe-attachment)")
     ap.add_argument("--ragdoll", action="store_true", help="convert spawned models to ragdolls after two seconds")
@@ -253,7 +263,7 @@ def main():
     sv = sv.replace("%PROBE%", '            thread R2C_Probe( prop )' if a.probe_attachment and not motion_seqs else '') \
         .replace("%RAGDOLL%", '            thread R2C_Ragdoll( prop )' if a.ragdoll else '') \
         .replace("%ATTACHMENT%", a.probe_attachment) \
-        .replace("%POSE_ATTACHMENTS%", ', '.join('"%s"' % s for s in a.pose_attachments.split(',') if s))
+        .replace("%PROBE_TIMES%", ', '.join(str(float(t)) for t in a.probe_times.split(',') if t))         .replace("%POSE_ATTACHMENTS%", ', '.join('"%s"' % s for s in a.pose_attachments.split(',') if s))
     spawn = '        entity prop = CreatePropDynamic( m, pos, < 0, player.EyeAngles().y + 180, 0 >, SOLID_VPHYSICS )'
     if a.npc:
         spawn = '''        entity prop = CreateNPC( "npc_soldier", player.GetTeam(), pos, < 0, player.EyeAngles().y + 180, 0 > )
@@ -339,7 +349,9 @@ def main():
                        'attachment': [float(v) for v in m.group(8).split(',')]})
     if motion_seqs and len(motion) != len(motion_seqs) * len(a.models) * 5:
         failures.append('motion samples incomplete (%d)' % len(motion))
-    report = {'success': not failures, 'failures': failures, 'spawns': spawns, 'motion': motion,
+    probes = [{'model': m.group(1), 'time': float(m.group(2)), 'origin': [float(v) for v in m.group(3).split(',')]}
+              for m in re.finditer(r'\[R2C\] probe model=(\S+) t=([-\d.eE]+) origin=(\S+)', log_text)]
+    report = {'success': not failures, 'failures': failures, 'spawns': spawns, 'motion': motion, 'probes': probes,
               'physics_drop': drops, 'attachment_motion': [float(value) for value in
               re.findall(r'\[R2C\] attachment motion=([-+\d.eE]+)', log_text)],
               'logs': new_logs, 'screenshots': new_shots, 'models': a.models}

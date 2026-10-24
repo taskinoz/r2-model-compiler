@@ -150,7 +150,7 @@ def apply_root_motion(bones, pose, fm):
     return out
 
 
-def decode_anim(d, m, bones, ai, frame_indices=None, with_scale=False):
+def decode_anim(d, m, bones, ai, frame_indices=None, with_scale=False, absent=None):
     """Return descriptor, name and local poses in the requested frame order.
 
     Each pose entry is (pos, rotation matrix), or (pos, rotation matrix, scale) with
@@ -224,6 +224,8 @@ def decode_anim(d, m, bones, ai, frame_indices=None, with_scale=False):
                 out.append(pose[bi])
             elif delta:
                 out.append(((0.0, 0.0, 0.0), angle_matrix((0, 0, 0))) + one)
+            elif absent is not None and absent[bi] is not None:
+                out.append(tuple(absent[bi][:2]) + one)  # bone not stored: caller's fallback pose
             else:
                 out.append((tuple(b['pos']), angle_matrix(b['rot'])) + one)
         frames.append(out)
@@ -268,6 +270,271 @@ def write_smd(path, bones, skeleton_frames, tris=None):
                         line += ' %d %s' % (bi, fmt(w))
                     f.write(line + '\n')
             f.write('end\n')
+
+
+def decode_ik_rules(d, h, ai):
+    """IK rules of an animation: list of (rule fields, compressed error offset or 0)."""
+    o = h['localanimindex'] + ai * 0x5C
+    a = mdl53.u(mdl53.ANIMDESC_FIELDS, d, o)
+    size = mdl53.size(mdl53.IKRULE_FIELDS)
+    out = []
+    for k in range(a['numikrules']):
+        ro = o + a['ikruleindex'] + k * size
+        r = mdl53.u(mdl53.IKRULE_FIELDS, d, ro)
+        r['attachment'] = mdl53.cstr(d, ro + r['szattachmentindex']) if r['szattachmentindex'] else ''
+        r['offset'] = ro
+        out.append(r)
+    return out
+
+
+def decode_ik_error(d, rule, frame):
+    """(pos, angles) of a rule's compressed error at an animation frame, or None."""
+    if not rule['compressedikerrorindex']:
+        return None
+    co = rule['offset'] + rule['compressedikerrorindex']
+    scale = struct.unpack_from('<6f', d, co)
+    offs = struct.unpack_from('<6h', d, co + 24)
+    f = frame - rule['iStart']
+    vals = [extract(d, co + offs[k] if offs[k] > 0 else None, max(f, 0), scale[k]) for k in range(6)]
+    return tuple(vals[:3]), tuple(vals[3:])
+
+
+def ik_error_frames(d, rule):
+    """Number of frames in a rule's compressed error stream (studiomdl's numerror)."""
+    co = rule['offset'] + rule['compressedikerrorindex']
+    p = co + struct.unpack_from('<6h', d, co + 24)[0]
+    n = 0
+    for _ in range(4096):
+        valid, total = d[p], d[p + 1]
+        if total == 0:
+            break
+        n += total
+        p += (valid + 1) * 2
+        if p >= co + struct.unpack_from('<6h', d, co + 24)[1]:
+            break
+    return n
+
+
+def ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta):
+    """QC ikrule options reproducing an animation's retail rules, in order."""
+    rules = decode_ik_rules(d, h, ai)
+    nf = a['numframes']
+    opts = []
+    frames = [[int(round(r[x] * (nf - 1))) if nf > 1 else 0 for x in ('start', 'peak', 'tail', 'end')] for r in rules]
+    # studiomdl quirk: a rule written with start "." overwrites the previous same-chain
+    # rule's end after that rule was processed (so it can end up before its tail,
+    # unwrapped). Recover the original end from the error stream length and write the
+    # next rule's start as "." so the compiler repeats it.
+    dot_start = set()
+    for i, r in enumerate(rules):
+        st, pk, tl, en = frames[i]
+        if nf > 1 and en < tl and r['compressedikerrorindex']:
+            n = ik_error_frames(d, r)
+            for cand in (st + n - 1, st + n - 3):
+                if tl <= cand and (cand >= nf) == (cand != st + n - 1):
+                    frames[i][3] = cand
+                    break
+            for k in range(1, len(rules)):
+                j = (i + k) % len(rules)
+                if rules[j]['chain'] == r['chain']:
+                    dot_start.add(j)
+                    break
+        elif nf > 1 and en < tl:
+            for k in range(1, len(rules)):
+                j = (i + k) % len(rules)
+                if rules[j]['chain'] == r['chain']:
+                    dot_start.add(j)
+                    break
+    # The mirror case: a rule written with end "." overwrites the next same-chain rule's
+    # start; when that rule came earlier it keeps a start after its peak, unwrapped.
+    # Recover its original start from the error stream and write the previous rule's end
+    # as "." so the compiler repeats the overwrite.
+    dot_end = set()
+    for i, r in enumerate(rules):
+        st, pk, tl, en = frames[i]
+        if nf > 1 and st > pk:
+            if r['compressedikerrorindex']:
+                n = ik_error_frames(d, r)
+                for cand in (en - n + 1, en - n + 3):
+                    if 0 <= cand <= pk and (en >= nf) == (cand != en - n + 1):
+                        frames[i][0] = cand
+                        break
+            else:
+                frames[i][0] = pk
+            for k in range(1, len(rules)):
+                j = (i - k) % len(rules)
+                if rules[j]['chain'] == r['chain']:
+                    dot_end.add(j)
+                    break
+    for i, r in enumerate(rules):
+        if not 0 <= r['chain'] < len(chain_names):
+            continue
+        kind = {1: 'touch', 2: None, 3: 'footstep', 4: 'release', 5: 'attachment', 6: 'unlatch'}.get(r['type'])
+        if not kind:
+            continue
+        o = 'ikrule "%s" %s' % (chain_names[r['chain']], kind)
+        if kind == 'touch':
+            o += ' "%s"' % (bones[r['bone']]['name'] if 0 <= r['bone'] < len(bones) else '')
+        elif kind == 'attachment':
+            o += ' "%s"' % r['attachment']
+        if r['slot'] != r['chain']:
+            o += ' target %d' % r['slot']
+        if nf > 1:
+            fr = [str(v) for v in frames[i]]
+            if i in dot_start:
+                fr[0] = '.'
+            if i in dot_end:
+                fr[3] = '.'
+            o += ' range %s %s %s %s' % tuple(fr)
+            o += ' contact %d' % int(round(r['contact'] * (nf - 1)))
+        if kind == 'footstep':
+            o += ' height %s radius %s floor %s endheight %s' % (fmt(r['height']), fmt(r['radius']), fmt(r['floor']), fmt(r['endHeight']))
+        if kind == 'attachment' and r['bone'] == -1:
+            o += ' fakeorigin %s %s %s' % tuple(fmt(v) for v in r['pos'])
+        if kind == 'attachment' and 0 <= r['bone'] < len(bones) and r['bone'] != chain_ends[r['chain']]:
+            o += ' bone "%s"' % bones[r['bone']]['name']
+        opts.append(o)
+    # studiomdl adds release rules for chains an animation moves without rules; retail
+    # animations that lack them were compiled with noautoik
+    if not delta and chain_names and {r['chain'] for r in rules} != set(range(len(chain_names))):
+        opts.append('noautoik')
+    return opts
+
+
+def anim_record_bones(d, h, ai):
+    """Bones that have a record in any section of an animation."""
+    o = h['localanimindex'] + ai * 0x5C
+    a = mdl53.u(mdl53.ANIMDESC_FIELDS, d, o)
+    if a['sectionframes']:
+        count = (a['numframes'] - 1) // a['sectionframes'] + 2
+        starts = [o + struct.unpack_from('<i', d, o + a['sectionindex'] + s * 4)[0] for s in range(count)]
+    else:
+        starts = [o + a['animindex']]
+    out = set()
+    for r in starts:
+        for _ in range(512):
+            bone = d[r + 4]
+            if bone == 255:
+                break
+            out.add(bone)
+            nxt = struct.unpack_from('<i', d, r + 28)[0]
+            if not nxt:
+                break
+            r += nxt
+    return out
+
+
+def decode_procedural(d, h, bi, b):
+    """Non-jiggle procedural bone data (types 1-4) as a dict, or None."""
+    t = b['proctype']
+    if t not in (1, 2, 3, 4) or not b['procindex']:
+        return None
+    o = h['boneindex'] + bi * 0xF4 + b['procindex']
+    if t == 1:
+        control, axis = struct.unpack_from('<2i', d, o)
+        return {'type': 1, 'control': control, 'axis': axis,
+                'pos': [struct.unpack_from('<3f', d, o + 8 + 12 * k) for k in range(6)],
+                'quat': [struct.unpack_from('<4f', d, o + 80 + 16 * k) for k in range(6)]}
+    if t == 2:
+        control, n, ti = struct.unpack_from('<3i', d, o)
+        trig = []
+        for k in range(n):
+            q = o + ti + 48 * k
+            trig.append({'inv_tolerance': struct.unpack_from('<f', d, q)[0], 'trigger': struct.unpack_from('<4f', d, q + 4),
+                         'pos': struct.unpack_from('<3f', d, q + 20), 'quat': struct.unpack_from('<4f', d, q + 32)})
+        return {'type': 2, 'control': control, 'triggers': trig}
+    parent, aim = struct.unpack_from('<2i', d, o)
+    return {'type': t, 'parent': parent, 'aim': aim, 'aimvector': struct.unpack_from('<3f', d, o + 8),
+            'upvector': struct.unpack_from('<3f', d, o + 20), 'basepos': struct.unpack_from('<3f', d, o + 32)}
+
+
+def euler_degrees(q):
+    """RadianEuler (x, y, z) of a quaternion, in degrees."""
+    return tuple(math.degrees(v) for v in matrix_angles(quat_matrix(q)))
+
+
+def procedural_files(d, h, bones, attachments, outdir, base):
+    """Writes $proceduralbones files for types 1-4; returns the QC lines."""
+    vrd, axis = [], []
+    for bi, b in enumerate(bones):
+        p = decode_procedural(d, h, bi, b)
+        if not p:
+            continue
+        name = b['name']
+        parent = bones[b['parent']]['name'] if b['parent'] >= 0 else ''
+        if p['type'] == 2:
+            c = bones[p['control']]
+            cparent = bones[c['parent']]['name'] if c['parent'] >= 0 else ''
+            vrd.append('<helper> %s %s %s %s' % (name, parent, cparent, c['name']))
+            vrd.append('<display> 1 1 1 0')
+            vrd.append('<basepos> 0 0 0')
+            for t in p['triggers']:
+                tol = math.degrees(1 / t['inv_tolerance']) if t['inv_tolerance'] else 0
+                vrd.append('<trigger> %s %s %s %s %s %s %s %s %s %s' % (
+                    fmt(tol), *(fmt(v) for v in euler_degrees(t['trigger'])), *(fmt(v) for v in euler_degrees(t['quat'])),
+                    *(fmt(v) for v in t['pos'])))
+        elif p['type'] in (3, 4):
+            aim = attachments[p['aim']] if p['type'] == 4 else bones[p['aim']]['name']
+            vrd.append('<aimconstraint> %s %s %s' % (name, bones[p['parent']]['name'], aim))
+            vrd.append('<aimvector> %s %s %s' % tuple(fmt(v) for v in p['aimvector']))
+            vrd.append('<upvector> %s %s %s' % tuple(fmt(v) for v in p['upvector']))
+            vrd.append('<basepos> %s %s %s' % tuple(fmt(v) for v in p['basepos']))
+        else:
+            c = bones[p['control']]
+            cparent = bones[c['parent']]['name'] if c['parent'] >= 0 else ''
+            axis.append('bone "%s" "%s" "%s" "%s" %d' % (name, parent, c['name'], cparent, p['axis'] + 1))
+            axis.append('basepos 0 0 0')
+            for k in range(6):
+                roll, pitch, yaw = euler_degrees(p['quat'][k])
+                axis.append('axis %d %s %s %s %s %s %s' % (k, *(fmt(v) for v in p['pos'][k]), fmt(roll), fmt(pitch), fmt(yaw)))
+    lines = []
+    if vrd:
+        with open(os.path.join(outdir, base + '_procedural.vrd'), 'w', newline='\n') as f:
+            f.write('\n'.join(vrd) + '\n')
+        lines.append('$proceduralbones "%s_procedural.vrd"' % base)
+    if axis:
+        with open(os.path.join(outdir, base + '_axisinterp.txt'), 'w', newline='\n') as f:
+            f.write('version 1\nproceduralbones\n' + '\n'.join(axis) + '\nend\n')
+        lines.append('$proceduralbones "%s_axisinterp.txt"' % base)
+    return lines
+
+
+def jigglebone_lines(name, j):
+    """$jigglebone block for a decoded mstudiojigglebone_t (angles stored in radians)."""
+    f = j['flags']
+    deg = lambda v: fmt(math.degrees(v))
+    out = ['$jigglebone "%s"' % name, '{']
+    if f & 0x03:
+        out.append('	%s' % ('is_flexible' if f & 0x01 else 'is_rigid'))
+        out.append('	{')
+        body = [('length', j['length']), ('tip_mass', j['tipMass']),
+                ('yaw_stiffness', j['yawStiffness']), ('yaw_damping', j['yawDamping']),
+                ('pitch_stiffness', j['pitchStiffness']), ('pitch_damping', j['pitchDamping']),
+                ('along_stiffness', j['alongStiffness']), ('along_damping', j['alongDamping'])]
+        out += ['		%s %s' % (k, fmt(v)) for k, v in body]
+        if f & 0x20:
+            out.append('		allow_length_flex')
+        if f & 0x10:
+            out.append('		angle_constraint %s' % deg(j['angleLimit']))
+        if f & 0x04:
+            out.append('		yaw_constraint %s %s' % (deg(j['minYaw']), deg(j['maxYaw'])))
+        out += ['		yaw_friction %s' % fmt(j['yawFriction']), '		yaw_bounce %s' % fmt(j['yawBounce'])]
+        if f & 0x08:
+            out.append('		pitch_constraint %s %s' % (deg(j['minPitch']), deg(j['maxPitch'])))
+        out += ['		pitch_friction %s' % fmt(j['pitchFriction']), '		pitch_bounce %s' % fmt(j['pitchBounce'])]
+        out.append('	}')
+    if f & 0x40:
+        out += ['	has_base_spring', '	{',
+                '		stiffness %s' % fmt(j['baseStiffness']), '		damping %s' % fmt(j['baseDamping']),
+                '		base_mass %s' % fmt(j['baseMass']),
+                '		left_constraint %s %s' % (fmt(j['baseMinLeft']), fmt(j['baseMaxLeft'])),
+                '		left_friction %s' % fmt(j['baseLeftFriction']),
+                '		up_constraint %s %s' % (fmt(j['baseMinUp']), fmt(j['baseMaxUp'])),
+                '		up_friction %s' % fmt(j['baseUpFriction']),
+                '		forward_constraint %s %s' % (fmt(j['baseMinForward']), fmt(j['baseMaxForward'])),
+                '		forward_friction %s' % fmt(j['baseForwardFriction']), '	}']
+    out.append('}')
+    return out
 
 
 def decompile(path, outdir):
@@ -413,6 +680,16 @@ def decompile(path, outdir):
             qc.append('\t{ ' + ' '.join('"%s"' % tex[fam[i]] for i in used) + ' }')
         qc.append('}')
 
+    # jiggle bones (procedural type 5), every value written so the struct is reproduced
+    for b in bones:
+        if b['proctype'] == 5 and b.get('jiggle'):
+            qc.extend(jigglebone_lines(b['name'], b['jiggle']))
+    # other procedural bones go to .vrd / axis files
+    att_names = []
+    for i in range(h['numlocalattachments']):
+        o = h['localattachmentindex'] + i * mdl53.size(mdl53.ATTACH_FIELDS)
+        att_names.append(mdl53.cstr(d, o + struct.unpack_from('<i', d, o)[0]))
+    qc.extend(procedural_files(d, h, bones, att_names, outdir, base))
     # attachments
     for i in range(h['numlocalattachments']):
         o = h['localattachmentindex'] + i * 0x5C
@@ -449,12 +726,15 @@ def decompile(path, outdir):
             line += ' loop %s' % fmt(p['loop'])
         qc.append(line)
     # ik chains
+    chain_names, chain_ends = [], []
     for i in range(h['numikchains']):
         o = h['ikchainindex'] + i * 0x20
         c = mdl53.u(mdl53.IKCHAIN_FIELDS, d, o)
         links = [mdl53.u(mdl53.IKLINK_FIELDS, d, o + c['linkindex'] + k * 0x1C) for k in range(c['numlinks'])]
         knee = links[0]['kneeDir'] if links else (0, 0, 0)
         qc.append('$ikchain "%s" "%s" knee %s %s %s' % (mdl53.cstr(d, o + c['sznameindex']), bones[links[-1]['bone']]['name'], *(fmt(x) for x in knee)))
+        chain_names.append(mdl53.cstr(d, o + c['sznameindex']))
+        chain_ends.append(links[-1]['bone'] if links else -1)
     # include models
     for i in range(h['numincludemodels']):
         o = h['includemodelindex'] + i * 8
@@ -470,8 +750,50 @@ def decompile(path, outdir):
 
     # animations
     anim_names = []
+    ref_pose = None
+    if h['numlocalseq'] and h['numlocalanim']:
+        q0 = mdl53.u(mdl53.SEQDESC_FIELDS, d, h['localseqindex'])
+        ref_ai = struct.unpack_from('<h', d, h['localseqindex'] + q0['animindexindex'])[0]
+        if 0 <= ref_ai < h['numlocalanim']:
+            ref_a = mdl53.u(mdl53.ANIMDESC_FIELDS, d, h['localanimindex'] + ref_ai * 0x5C)
+            if not ref_a['flags'] & 4:
+                ref_pose = decode_anim(d, m, bones, ref_ai, [0])[2][0]
+    # Weight lists. Respawn sequences carry their own lists ("seqweights"), which need not
+    # match the weights the animations were encoded with. Each animation gets an encoding
+    # list of 1 for the bones it stores and 0 for the rest, so exactly those are encoded.
+    weight_names = {}
+
+    def weightlist(w, prefix):
+        if w not in weight_names:
+            weight_names[w] = '%s_%d' % (prefix, len(weight_names))
+            body = ' '.join('"%s" %s' % (b['name'], fmt(x)) for b, x in zip(bones, w))
+            qc.append('$weightlist "%s" { %s }' % (weight_names[w], body))
+        return weight_names[w]
+
+    seq_weights, zero_in_seq = {}, {}
+    for si in range(h['numlocalseq']):
+        o = h['localseqindex'] + si * 0xE8
+        q = mdl53.u(mdl53.SEQDESC_FIELDS, d, o)
+        if not q['weightlistindex']:
+            continue
+        w = struct.unpack_from('<%df' % len(bones), d, o + q['weightlistindex'])
+        seq_weights[si] = weightlist(w, 'weights')  # explicit even when all 1
+        for k in range(q['groupsize'][0] * q['groupsize'][1]):
+            ai = struct.unpack_from('<h', d, o + q['animindexindex'] + k * 2)[0]
+            zero_in_seq.setdefault(ai, set()).update(bi for bi, x in enumerate(w) if x == 0)
+    anim_weight_names = {}
     for ai in range(h['numlocalanim']):
-        a, name, frames = decode_anim(d, m, bones, ai, with_scale=True)
+        stored = anim_record_bones(d, h, ai)
+        if len(stored) < len(bones):
+            anim_weight_names[ai] = weightlist(tuple(1.0 if bi in stored else 0.0 for bi in range(len(bones))), 'stored')
+    for ai in range(h['numlocalanim']):
+        # Bones an animation does not store and its sequence zeroes are filled from the
+        # reference animation rather than the bind pose: retail computed values such as IK
+        # targets from the full source pose, whose root carries the usual rotation.
+        stored = anim_record_bones(d, h, ai)
+        zeros = zero_in_seq.get(ai, set())
+        absent = [ref_pose[bi] if bi in zeros and bi not in stored else None for bi in range(len(bones))] if ref_pose else None
+        a, name, frames = decode_anim(d, m, bones, ai, with_scale=True, absent=absent)
         # bone scale goes into the SMD's optional scale columns, only for animations
         # that use it (STUDIO_HAS_SCALE), so other exports stay plain studiomdl SMD
         scales = [[e[2] for e in fr] for fr in frames] if a['flags'] & 0x20000 else None
@@ -506,6 +828,9 @@ def decompile(path, outdir):
         if a['flags'] & 0x20:
             # all-zero delta (retail flags 0x24); keep the frame count when there is one
             opts.append('noanimation' if a['numframes'] <= 1 else 'noanim_keepduration')
+        if ai in anim_weight_names:
+            opts.append('weightlist "%s"' % anim_weight_names[ai])
+        opts += ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta)
         anim_names.append(('a_' + name.replace('@', 'at_'), smd, opts, a))
         qc.append('$animation "%s" "%s" %s' % (anim_names[-1][0], smd, ' '.join(o for o in opts if not o.startswith('//'))))
     # sequences
@@ -518,6 +843,8 @@ def decompile(path, outdir):
         idxs = struct.unpack_from('<%dh' % n, d, o + s['animindexindex'])
         lines = ['$sequence "%s"\n{' % label]
         lines.append('\t' + ' '.join('"%s"' % anim_names[i][0] for i in idxs))
+        if si in seq_weights:
+            lines.append('\tseqweights "%s"' % seq_weights[si])
         if s['groupsize'][0] > 1 or s['groupsize'][1] > 1:
             lines.append('\tblendwidth %d' % s['groupsize'][0])
             for p in range(2):

@@ -1,16 +1,16 @@
 # Tested Windows build — 25 October 2026
 
 This build is usable for Titanfall 2 static props, moving physics props and skinned,
-animated models, including Respawn root motion (frame movement) and bone scale
-animation. It is not a claim of complete Valve/Respawn feature parity.
+animated models, including Respawn root motion (frame movement), bone scale
+animation, IK rules, sequence weight lists and procedural bones. It is not a claim of complete Valve/Respawn feature parity.
 
 Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
-SHA-256: `d49faf389d1e4fb31017b7ae3c3643b917908193a052c3bc05faf6b1ce5affda`.
+SHA-256: `0b386047f1a20876d5e0996cb46892bdeb683dc849a22639b95db5255362d5c1`.
 
 ## Automated checks
 
-- Both CTest groups pass: the C++ collision hull suite and eleven Python compiler/
-  corpus-runner regression tests (including SMD bone-scale input).
+- Both CTest groups pass: the C++ collision hull suite and thirteen Python compiler/
+  corpus-runner regression tests (including bone scale, IK rules and procedural bones).
 - Blender Source Tools exports from the same scene compile as SMD and binary DMX
   2, 3, 4, 5 and 9. All six outputs match in the compared fields, including two
   physics solids with total volume 24,576 cubic inches.
@@ -24,11 +24,11 @@ SHA-256: `d49faf389d1e4fb31017b7ae3c3643b917908193a052c3bc05faf6b1ce5affda`.
 ## Retail corpus
 
 All **602/602** retail `mp_common` MDL v53 models decompiled and compiled without a
-compile failure or decompiler exception. **564/602** match every compared field.
+compile failure or decompiler exception. **560/602** match every compared field.
 
 Reports:
 
-- `test-output/release-corpus5/results.json` and `release-corpus5.log`: full run
+- `test-output/release-corpus9/results.json` and `release-corpus9.log`: full run
   (fresh decompile and compile) with the release executable above.
 - `test-output/corpus-heading` and `test-output/corpus-euler`: A/B runs of the two
   frame-movement yaw definitions (heading kept: 7 vs 9 animation differences).
@@ -42,7 +42,7 @@ python tools\roundtrip.py --jobs 8 --compiler build\r2studiomdl.exe --out test-o
 To recompile existing, unedited exports with another build:
 
 ```powershell
-python tools\recheck_corpus.py --from-report test-output\release-corpus5\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
+python tools\recheck_corpus.py --from-report test-output\release-corpus9\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
 ```
 
 The recheck verifies input model size/timestamps and the exporter/comparison tool
@@ -51,14 +51,16 @@ hashes. It assumes the cached QC/SMD exports have not been manually edited.
 Compared fields: bone names/parents, bind translations, texture names, triangle
 counts by LOD, sequence labels, sequence flags and blend pose keys, animation flags
 and frame counts, sampled world positions of non-delta animations (with frame
-movement applied), sampled raw local values of delta animations, sampled bone scale,
+movement applied), sampled raw local values of delta animations, sampled bone scale, IK rules (type,
+chain, bone, slot, ranges, footstep parameters, targets and sampled error values),
+sequence weight lists, procedural bones (type and parameters),
 physics solid counts/volume, attachment count, the map-collision header count, the
 face/plane/edge/vertex counts of every collision piece grouped by owning bone, and
 each bone's collision reference. Entry order within the collision block is not
 compared: retail jointed models order it by neither bone nor PHY solid. Animation
 samples are first, middle and last frames. This is not a byte-for-byte comparison.
 
-The 38 remaining differences are retained in the report:
+The 42 remaining differences are retained in the report:
 
 | Models | Difference |
 | --- | --- |
@@ -68,6 +70,7 @@ The 38 remaining differences are retained in the report:
 | `droppod_fireteam` | 0.56 inches |
 | `straton_anims` | 0.69 inches |
 | `widow` | 0.92 inches |
+| `titan_medium_sp_core`, `titan_heavy_sp_core`, `titan_medium_mp_reactions`, `titan_medium_mp_core` | IK footstep error samples differ by 0.27-0.50 (about 0.3-0.6 degrees at the comparison's 50-unit lever) |
 | 31 models (titans, gibs, weapons, projectiles, `marvin`, `super_spectre_*`) | One or two collision pieces differ by 1-3 faces, bevels, edges or vertices |
 
 The animation differences come from bones 6,000-54,000 units from the model origin
@@ -75,7 +78,8 @@ and from how yaw is split between the frame-movement track and the root bone. Re
 does not record that split, and our heading-based split is within 0.003-0.04 degrees
 of it. The collision differences come from hull reconstruction: retail keeps
 collinear points on hull edges and splits near-coplanar faces slightly differently.
-Volumes and solid counts match. Neither kind is claimed lossless.
+Volumes and solid counts match. The IK residuals follow from the same animation
+re-quantization: errors are recomputed from the decoded poses. None is claimed lossless.
 
 ## In-game checks (Northstar)
 
@@ -100,6 +104,14 @@ Volumes and solid counts match. Neither kind is claimed lossless.
   play `sd_closed_to_open`, whose scaled `def_c_scale_ball` carries the head lights.
   `head_light_1` matches retail at every sample. A control built without scale
   support is 21-23 units off at the start of the same sequence.
+
+- **Procedural bones** (`test-output/proc-ingame/`): a test model whose `driver`
+  bone turns 90 degrees. With `$proceduralbones`, the quaternion-interpolation
+  follower rises to its 80-unit trigger position and the aim-at bar tilts to point at
+  the rising target (`big.png`, `aim.png`); the same model without procedural bones
+  stays at the bind pose. Server-side attachment queries do not evaluate procedural
+  bones, so this was checked visually on the client. Axis interpolation was not
+  checked in game.
 
 Structured reports and screenshots are under `test-output/`:
 `physics-ingame-report.json`, `animation-ingame-report.json`,
@@ -134,6 +146,15 @@ Structured reports and screenshots are under `test-output/`:
   `noanimation`/`noanim_keepduration` survive decompilation. A named `$animation`'s
   own flags are no longer copied onto its sequences, matching retail.
 - Bone scale animation: SMD/DMX input, raw or RLE encoding, HAS_SCALE flags.
+- IK rules: studiomdl's range inference, footstep/touch/attachment errors following
+  the frame-movement track, compression, auto-release, rule indices and sequence
+  counts; the decompiler reproduces retail's range-overwrite quirks.
+- Sequence weight lists (`seqweights`) kept separate from the animations' encoding
+  weights.
+- Jiggle bones survive decompilation (and their studiomdl default base limits);
+  `$proceduralbones` (.vrd quaternion-interpolation and aim-at bones, .txt axis
+  interpolation). Only "used by" flags propagate to parent bones, so a jiggle bone's
+  ancestors keep their animation.
 - Retail bone fields: zero qAlignment and 1/2048 scalescale.
 - Map-collision block for jointed models (bone references), bevels only where
   dot(n0, n1) < 0.26, at most 63 faces per piece, and retail bone references
@@ -141,7 +162,7 @@ Structured reports and screenshots are under `test-output/`:
 
 ## Remaining feature limits
 
-Animation IK rules/fixups, procedural bones and UI panel meshes remain incomplete.
+`ikfixup` and UI panel meshes remain incomplete.
 Root motion is written as Respawn frame-movement tracks (`$legacymovement` selects
 Valve movement records).
 Ragdoll joint limits have not been measured exhaustively. Titanfall 1 and Apex

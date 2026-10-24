@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import time
 import sys
 import traceback
 
@@ -28,7 +29,16 @@ def checkpoint(path, value):
     temporary = path + '.tmp'
     with open(temporary, 'w') as report:
         json.dump(value, report, indent=1)
-    os.replace(temporary, path)
+    # Windows can briefly deny the replace while another process (antivirus, indexer)
+    # holds the report open; retry rather than abort a long run.
+    for attempt in range(20):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.25)
 
 
 def run_signature(compiler):
@@ -80,8 +90,11 @@ def summary(path):
         if q['posekeyindex'] and (q['groupsize'][0] > 1 or q['groupsize'][1] > 1):
             n = q['groupsize'][0] + q['groupsize'][1]
             keys = tuple(round(k, 2) for k in struct.unpack_from('<%df' % n, d, o + q['posekeyindex']))
+        weights = ()
+        if q['weightlistindex']:
+            weights = tuple(round(w, 3) for w in struct.unpack_from('<%df' % len(bones), d, o + q['weightlistindex']))
         seqs.append((mdl53.cstr(d, o + q['szlabelindex']), q['numevents'], q['groupsize'][0], q['groupsize'][1],
-                     q['flags'], keys))
+                     q['flags'], keys, weights, q['numikrules']))
     s['seqs'] = seqs
     anims = []
     for ai in range(h['numlocalanim']):
@@ -99,7 +112,21 @@ def summary(path):
         # the translation plus the rotation's basis vectors at a 50-unit lever.
         def local_delta(pose):
             return [tuple(p) + tuple(50 * rm[r][c] for r in range(3) for c in range(3)) for p, rm in pose]
-        anims.append({'frames': nf, 'delta': delta, 'flags': a['flags'], 'scale': scales,
+        ik = []
+        for r in dc.decode_ik_rules(d, h, ai):
+            rng = (r['start'], r['peak'], r['tail'], r['end'], r['contact'])
+            errs = []
+            if r['compressedikerrorindex'] and nf > 1:
+                first = r['iStart']
+                last = first + int(round((r['end'] - r['start']) * (nf - 1)))
+                for f in sorted({first, (first + last) // 2, last}):
+                    e = dc.decode_ik_error(d, r, f)
+                    errs.append(e[0] + tuple(50 * v for v in e[1]))  # angles at a 50-unit lever
+            ik.append({'key': (r['index'], r['type'], r['chain'], r['bone'], r['slot'], r['attachment'],
+                               tuple(round(v, 3) for v in rng), round(r['height'], 2), round(r['radius'], 2),
+                               round(r['floor'], 2), round(r['endHeight'], 2)),
+                       'pos': tuple(r['pos']), 'errors': errs})
+        anims.append({'frames': nf, 'delta': delta, 'flags': a['flags'], 'scale': scales, 'ik': ik,
                       'world': {f: (local_delta(pose) if delta else world_positions(bones, pose))
                                 for f, pose in zip(sample, frames)}})
     s['anims'] = anims
@@ -125,6 +152,17 @@ def summary(path):
     # bone references: the index only matters when there are no pieces (0 vs 0xFFFF)
     s['boneColl'] = [(b['collisionIndex'] if not b['collisionCount'] else 'ref', b['collisionCount']) for b in bones]
     s['pertri'] = h['perTriAABBLeafCount']
+    # procedural bones: type per bone, and jiggle parameters
+    def flat(v):
+        if isinstance(v, dict):
+            return tuple(flat(x) for x in v.values())
+        if isinstance(v, (list, tuple)):
+            return tuple(flat(x) for x in v)
+        return round(v, 3) if isinstance(v, float) else v
+    s['proc'] = [(b['name'], b['proctype'], b['jiggle']['flags'] if b['proctype'] == 5 and b.get('jiggle') else 0,
+                  tuple(round(v, 3) for k, v in b['jiggle'].items() if k != 'flags') if b['proctype'] == 5 and b.get('jiggle')
+                  else flat(dc.decode_procedural(d, h, i, b)))
+                 for i, b in enumerate(bones) if b['proctype']]
     return s
 
 
@@ -146,7 +184,7 @@ def compare(a, b):
         issues.append('sequence names differ')
     elif [x[4:] for x in a['seqs']] != [x[4:] for x in b['seqs']]:
         bad = [x[0] for x, y in zip(a['seqs'], b['seqs']) if x[4:] != y[4:]]
-        issues.append('sequence flags/pose keys differ (%d, e.g. %s)' % (len(bad), bad[0]))
+        issues.append('sequence flags/pose keys/weights differ (%d, e.g. %s)' % (len(bad), bad[0]))
     if len(a['anims']) != len(b['anims']):
         issues.append('anim count %d vs %d' % (len(a['anims']), len(b['anims'])))
     elif a['bones'] == b['bones']:
@@ -166,6 +204,19 @@ def compare(a, b):
                     worst = max(worst, math.dist(p, q))
         if worst > 0.25:
             issues.append('anim world positions off by %.2f' % worst)
+        ikbad, ikworst = None, 0.0
+        for x, y in zip(a['anims'], b['anims']):
+            xi, yi = x.get('ik', []), y.get('ik', [])
+            if [r['key'] for r in xi] != [r['key'] for r in yi]:
+                ikbad = ikbad or (len(xi), len(yi), next((p['key'], q['key']) for p, q in zip(xi + [{'key': None}], yi + [{'key': None}]) if p['key'] != q['key']))
+                continue
+            for p, q in zip(xi, yi):
+                ikworst = max([ikworst, math.dist(p['pos'], q['pos'])] +
+                              [math.dist(u, v) for u, v in zip(p['errors'], q['errors'])])
+        if ikbad:
+            issues.append('ik rules differ (%d vs %d rules, e.g. %s vs %s)' % (ikbad[0], ikbad[1], ikbad[2][0], ikbad[2][1]))
+        elif ikworst > 0.25:
+            issues.append('ik rule targets/errors off by %.2f' % ikworst)
         sworst = 0.0
         for x, y in zip(a['anims'], b['anims']):
             for f in x.get('scale', {}):
@@ -182,6 +233,10 @@ def compare(a, b):
             va, vb = a['phy']['volume'], b['phy']['volume']
             if va > 0 and abs(va - vb) / va > 0.02:
                 issues.append('phy volume %.1f vs %.1f' % (va, vb))
+    if a.get('proc', []) != b.get('proc', []):
+        pa, pb = a.get('proc', []), b.get('proc', [])
+        issues.append('procedural bones differ (%d vs %d, e.g. %s)' % (len(pa), len(pb), next(
+            (x[0] for x, y in zip(pa + [('',)], pb + [('',)]) if x != y), '')))
     if a['attach'] != b['attach']:
         issues.append('attachments %d vs %d' % (a['attach'], b['attach']))
     if a['coll'] != b['coll']:
