@@ -9,3 +9,6 @@ __pycache__/
 .vs/
 /samples/extracted/
 /tests/*/out/
+/build-dev/
+/tests/blender/out/
+/tests/dmx/out/
