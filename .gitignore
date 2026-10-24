@@ -1,0 +1,10 @@
+/build*/
+/out/
+/test-output/
+*.obj
+*.pdb
+*.ilk
+__pycache__/
+*.pyc
+.vs/
+/samples/extracted/
