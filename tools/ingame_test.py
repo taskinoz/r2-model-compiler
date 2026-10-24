@@ -50,6 +50,10 @@ void function R2C_SpawnThread( entity player )
         if ( IsValid( prop ) )
         {
             printl( "[R2C] spawned " + m + " at " + pos + " mins " + prop.GetBoundingMins() + " maxs " + prop.GetBoundingMaxs() )
+            // collision check: trace down onto the prop from above
+            TraceResults tr = TraceLine( pos + < 0, 0, 400 >, pos - < 0, 0, 16 >, [ player ], TRACE_MASK_SHOT, TRACE_COLLISION_GROUP_NONE )
+            bool hitProp = IsValid( tr.hitEnt ) && tr.hitEnt == prop
+            printl( "[R2C] trace " + m + " hitProp=" + hitProp + " endZ=" + ( tr.endPos.z - pos.z ) )
             int seq = prop.LookupSequence( "%SEQ%" )
             if ( seq >= 0 )
                 prop.Anim_Play( "%SEQ%" )
