@@ -155,6 +155,11 @@ void BuildContext::BuildHitboxes() {
         for (size_t k = 0; k < bones.size(); k++) {
             mn[k] = bones[k].bmin;
             mx[k] = bones[k].bmax;
+            // retail's generated boxes always contain the bone's origin
+            if (mn[k].x <= mx[k].x) {
+                mn[k] = Min(mn[k], Vec3());
+                mx[k] = Max(mx[k], Vec3());
+            }
         }
         for (size_t k = 0; k < bones.size(); k++) {
             int j = bones[k].parent;

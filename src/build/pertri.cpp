@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <map>
 
 #include "build/context.h"
@@ -71,7 +72,10 @@ void BuildPerTriAABB(BuildContext& ctx) {
     }
     pt.version = 2;
     if (tris.empty()) return;
-    Vec3 mn = verts[0], mx = verts[0];
+    // retail starts the maximum at FLT_MIN (smallest positive float), so a maximum
+    // below zero is stored as FLT_MIN
+    const float tiny = std::numeric_limits<float>::min();
+    Vec3 mn = verts[0], mx(tiny, tiny, tiny);
     for (auto& v : verts) {
         mn = Min(mn, v);
         mx = Max(mx, v);

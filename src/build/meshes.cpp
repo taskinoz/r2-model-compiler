@@ -29,13 +29,15 @@ struct VertKey {
 };
 
 bool SameVertex(const CVertex& a, const CVertex& b) {
+    // corners carrying the same source vertex id are one vertex (even where a LOD's bone
+    // replacement changed their weights); different ids never merge
+    if (a.sourceId >= 0 || b.sourceId >= 0) return a.sourceId == b.sourceId;
     if (!(a.pos == b.pos) || !(a.uv == b.uv) || !(a.uv2 == b.uv2)) return false;
     if (Dot(a.normal, b.normal) < 0.99939083f) return false;  // cos(2 deg), studiomdl's normal_blend
     if (a.numBones != b.numBones) return false;
     for (int i = 0; i < a.numBones; i++)
         if (a.bone[i] != b.bone[i] || std::fabs(a.weight[i] - b.weight[i]) > 1e-5f) return false;
     if (std::memcmp(a.color, b.color, 4) != 0) return false;
-    if (a.sourceId != b.sourceId) return false;
     if (a.hasTangent != b.hasTangent) return false;
     if (a.hasTangent && std::memcmp(&a.tangent, &b.tangent, sizeof(Vec4)) != 0) return false;
     return true;
