@@ -204,3 +204,7 @@ collects the v53 format facts the compiler relies on.
   [Northstar](https://github.com/R2Northstar) and
   [tf2vpk](https://github.com/pg9182/tf2vpk) made decompiling, authoring and in-game
   testing possible.
+
+## License
+
+[MIT](LICENSE). Titanfall 2 game files are not covered and are not distributed here.
