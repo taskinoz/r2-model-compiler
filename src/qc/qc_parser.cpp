@@ -385,6 +385,12 @@ void Parser::CmdAttachment() {
             float ang[3] = {0, 0, 0};
             for (int i = 0; i < 3 && Avail(); i++) ang[i] = F("angle");
             a.local = AngleMatrix(QAngleToRadianEuler(ang[0], ang[1], ang[2]));
+        } else if (Is("matrix")) {
+            // r2c extension: the stored 3x4 bone-space matrix, row by row (retail has some
+            // that are not rotations, such as all zeros)
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 4; c++) a.local.m[r][c] = F("matrix value");
+            a.exactMatrix = true;
         } else if (Is("x_and_z_axes")) {
             Vec3 x = V3();
             Vec3 z = V3();
@@ -400,7 +406,7 @@ void Parser::CmdAttachment() {
         } else
             Fatal("%s: unknown attachment option \"%s\"", tk_.Where().c_str(), T().c_str());
     }
-    a.local.SetOrigin(p);
+    if (!a.exactMatrix) a.local.SetOrigin(p);
     m_.attachments.push_back(a);
 }
 
@@ -489,6 +495,9 @@ void Parser::CmdIKChain() {
             c.center = V3();
         else if (Is("angle_unknown") || Is("unk"))
             c.unk = F("value");
+        else if (Is("links")) {
+            for (int k = 0; k < 3; k++) c.links.push_back(S("link bone"));
+        }
         else
             Warn("%s: unknown ikchain option \"%s\"", tk_.Where().c_str(), T().c_str());
     }
@@ -1017,6 +1026,10 @@ void Parser::CmdSequence(bool declare) {
             seq.ikResetMask = I("mask");
             return true;
         }
+        if (Is("unk_c4")) {
+            seq.unkC4 = I("value");
+            return true;
+        }
         if (Is("addlayer")) {
             QcAutoLayer l;
             l.sequence = S("sequence");
@@ -1057,6 +1070,10 @@ void Parser::CmdSequence(bool declare) {
                 } else if (Is("local")) {
                     l.flags |= STUDIO_AL_LOCAL;
                     seq.flags |= STUDIO_LOCAL;
+                } else if (Is("realtime")) {
+                    l.flags |= 0x8000;  // STUDIO_AL_REALTIME
+                } else if (Is("flags")) {
+                    l.flags |= I("layer flags");  // r2c extension: raw bits (e.g. 0x2000)
                 } else {
                     tk_.Unget();
                     break;
@@ -1125,42 +1142,37 @@ void Parser::CmdSequence(bool declare) {
 }
 
 void Parser::CmdKeyValues(std::string& out) {
-    // Re-serialise the block as KeyValues text, the way studiomdl's Option_KeyValues does.
+    // studiomdl's Option_KeyValues: the block as text, top-level tokens bare and nested
+    // ones quoted, each followed by a space; retail key values keep exactly this layout
     if (!tk_.Get(true) || T() != "{") Fatal("%s: expected '{' for keyvalues", tk_.Where().c_str());
-    std::string kv;
+    std::string kv = "mdlkeyvalue\n{\n";
     int depth = 1;
-    bool expectValue = false;
-    std::string indent = "";
     while (tk_.Get(true)) {
         if (!tk_.Cur().quoted && T() == "}") {
-            depth--;
-            if (depth == 0) break;
-            kv += "}\n";
-            expectValue = false;
-            continue;
-        }
-        if (!tk_.Cur().quoted && T() == "{") {
-            depth++;
+            if (--depth <= 0) break;
+            kv += " }\n";
+        } else if (!tk_.Cur().quoted && T() == "{") {
             kv += "{\n";
-            expectValue = false;
-            continue;
-        }
-        if (!expectValue) {
+            depth++;
+        } else if (depth > 1) {
             kv += "\"" + T() + "\" ";
-            expectValue = true;
         } else {
-            kv += "\"" + T() + "\"\n";
-            expectValue = false;
+            kv += T() + " ";
         }
     }
-    out += kv;
+    if (depth > 0) Fatal("%s: keyvalue block missing matching braces", tk_.Where().c_str());
+    out += kv + "}\n";
 }
 
 int Parser::ParseContents(int base) {
     int add = 0, remove = 0;
     do {
         std::string t = S("contents");
-        if (IEquals(t, "grate")) {
+        if (!t.empty() && t.find_first_not_of("0123456789") == std::string::npos) {
+            // a number (r2c extension): the exact contents mask
+            base = std::stoi(t);
+            add = remove = 0;
+        } else if (IEquals(t, "grate")) {
             add |= CONTENTS_GRATE;
             remove |= CONTENTS_SOLID;
         } else if (IEquals(t, "ladder"))
@@ -1573,7 +1585,7 @@ void Parser::Register() {
     h["$modelname"] = [&] {
         std::string n = S("model name");
         if (!n.empty() && (n[0] == '/' || n[0] == '\\')) n = n.substr(1);
-        m_.modelName = FixSlashes(n);
+        m_.modelName = n;  // as written; output paths normalise their own slashes
     };
     h["$cd"] = [&] {
         std::string d = S("directory");
@@ -1670,6 +1682,7 @@ void Parser::Register() {
             }
         m_.jointContents.push_back({j, c});
     };
+    h["$mass"] = [&] { m_.headerMass = F("mass"); };
     h["$illumposition"] = [&] {
         // studiomdl rotates these by its built-in 90 degrees
         float x = F("x"), y = F("y"), z = F("z");
@@ -1702,6 +1715,14 @@ void Parser::Register() {
         m_.hierarchy.push_back({c, p});
     };
     h["$bonemerge"] = [&] { m_.boneMerge.push_back(S("bone")); };
+    h["$autohitboxes"] = [&] { m_.autoHitboxes = true; };
+    h["$srcbonetransform"] = [&] {
+        QcModelDef::SrcBoneTransform t;
+        t.bone = S("bone");
+        for (float& v : t.pre) v = F("pretransform");
+        for (float& v : t.post) v = F("posttransform");
+        m_.srcBoneTransforms.push_back(t);
+    };
     h["$alwayscollapse"] = [&] { m_.alwaysCollapse.push_back(S("bone")); };
     h["$collapsebones"] = [&] { m_.collapseBones = true; };
     h["$realignbones"] = [&] { m_.realignBones = true; };
@@ -1752,7 +1773,8 @@ void Parser::Register() {
     h["$sequence"] = [&] { CmdSequence(false); };
     h["$declaresequence"] = [&] { CmdSequence(true); };
     h["$declareanimation"] = [&] { CmdDeclareAnimation(); };
-    h["$includemodel"] = [&] { m_.includeModels.push_back("models/" + FixSlashes(S("model"))); };
+    // the name after "models/" is kept as written, as retail stores it
+    h["$includemodel"] = [&] { m_.includeModels.push_back("models/" + S("model")); };
     h["$keyvalues"] = [&] { CmdKeyValues(m_.keyValues); };
     h["$collisionmodel"] = [&] { CmdCollision(false); };
     h["$collisionjoints"] = [&] { CmdCollision(true); };

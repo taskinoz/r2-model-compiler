@@ -36,9 +36,10 @@ std::vector<Fixup> BuildFixups(const CompiledModel& m) {
     for (auto& bp : m.bodyParts)
         for (auto& md : bp.models)
             for (auto& me : md.meshes) {
+                size_t meshStart = f.size();  // runs never continue across meshes
                 for (size_t i = 0; i < me.verts.size(); i++) {
                     int lod = me.vertMaxLod[i];
-                    if (!f.empty() && f.back().lod == lod && f.back().start + f.back().count == at)
+                    if (f.size() > meshStart && f.back().lod == lod)
                         f.back().count++;
                     else
                         f.push_back({lod, at, 1});
@@ -48,6 +49,8 @@ std::vector<Fixup> BuildFixups(const CompiledModel& m) {
     return f;
 }
 
+// Per-LOD vertex counts. With a fixup table retail stores, for each LOD, the end of the
+// last run that LOD uses rather than the number of vertices it uses.
 void LodCounts(const CompiledModel& m, int out[kMaxLods]) {
     for (int l = 0; l < kMaxLods; l++) out[l] = 0;
     for (auto& bp : m.bodyParts)
@@ -56,17 +59,38 @@ void LodCounts(const CompiledModel& m, int out[kMaxLods]) {
                 for (int l = 0; l < kMaxLods; l++) out[l] += me.lodVertexCount[l];
 }
 
+void LodCounts(const std::vector<Fixup>& fixups, int out[kMaxLods]) {
+    for (int l = 0; l < kMaxLods; l++) out[l] = 0;
+    for (auto& f : fixups)
+        for (int l = 0; l <= f.lod && l < kMaxLods; l++) out[l] = std::max(out[l], f.start + f.count);
+    for (int l = 1; l < kMaxLods; l++)
+        if (out[l] == 0) out[l] = out[l - 1];
+}
+
 }  // namespace
+
+// Retail writes the fixup table for every model with LODs and more than one mesh, and
+// never for a single mesh (whose coarse-first order needs no remapping)
+static std::vector<Fixup> ModelFixups(const CompiledModel& m) {
+    size_t numMeshes = 0;
+    for (auto& bp : m.bodyParts)
+        for (auto& md : bp.models) numMeshes += md.meshes.size();
+    if (m.numLods > 1 && numMeshes > 1) return BuildFixups(m);
+    return {};
+}
+
+static void HeaderLodCounts(const CompiledModel& m, const std::vector<Fixup>& fixups, int out[kMaxLods]) {
+    if (fixups.empty())
+        LodCounts(m, out);
+    else
+        LodCounts(fixups, out);
+}
 
 std::vector<uint8_t> WriteVVD(const CompiledModel& m, int checksum) {
     Buffer b;
-    std::vector<Fixup> fixups;
-    if (m.numLods > 1) {
-        fixups = BuildFixups(m);
-        if (fixups.size() == 1) fixups.clear();  // one run covering everything needs no table
-    }
+    std::vector<Fixup> fixups = ModelFixups(m);
     int counts[kMaxLods];
-    LodCounts(m, counts);
+    HeaderLodCounts(m, fixups, counts);
     b.U32(0x56534449);  // IDSV
     b.I32(4);
     b.I32(checksum);
@@ -107,7 +131,7 @@ std::vector<uint8_t> WriteVVD(const CompiledModel& m, int checksum) {
 std::vector<uint8_t> WriteVVC(const CompiledModel& m, int checksum) {
     Buffer b;
     int counts[kMaxLods];
-    LodCounts(m, counts);
+    HeaderLodCounts(m, ModelFixups(m), counts);  // the same counts as the VVD
     b.U32(0x56434449);  // IDCV
     b.I32(1);
     b.I32(checksum);
@@ -235,7 +259,7 @@ std::vector<uint32_t> OptimizeTriangleOrder(const std::vector<uint32_t>& idx, si
     return out;
 }
 
-VStripGroup BuildStripGroup(const CMesh& mesh, const std::vector<uint32_t>& lodIdx) {
+VStripGroup BuildStripGroup(const CMesh& mesh, const std::vector<uint32_t>& lodIdx, bool staticProp) {
     VStripGroup sg;
     std::vector<uint32_t> idx = OptimizeTriangleOrder(lodIdx, mesh.verts.size());
     std::map<uint32_t, uint16_t> remap;
@@ -279,8 +303,13 @@ VStripGroup BuildStripGroup(const CMesh& mesh, const std::vector<uint32_t>& lodI
     strip.vertOffset = 0;
     strip.numVerts = static_cast<int>(sg.verts.size());
     strip.indices = sg.indices;
-    strip.numBones = 3;
-    for (size_t i = 0; i < palette.size(); i++) strip.boneStateChanges.push_back({static_cast<int>(i), palette[i]});
+    // retail: a strip's bone count is the most weights any of its vertices uses; static
+    // props have none and no bone state changes
+    strip.numBones = 0;
+    if (!staticProp) {
+        for (auto& vv : sg.verts) strip.numBones = std::max<int>(strip.numBones, vv.numBones);
+        for (size_t i = 0; i < palette.size(); i++) strip.boneStateChanges.push_back({static_cast<int>(i), palette[i]});
+    }
     sg.strips.push_back(strip);
     return sg;
 }
@@ -322,7 +351,7 @@ std::vector<uint8_t> WriteVTX(const CompiledModel& m, int checksum) {
                 for (auto& me : md.meshes) {
                     MeshOut meo;
                     if (l < static_cast<int>(me.lods.size()) && !me.lods[l].indices.empty())
-                        meo.groups.push_back(BuildStripGroup(me, me.lods[l].indices));
+                        meo.groups.push_back(BuildStripGroup(me, me.lods[l].indices, (m.flags & 0x10) != 0));  // STUDIOHDR_FLAGS_STATIC_PROP
                     mo.lods[l].meshes.push_back(std::move(meo));
                 }
             }

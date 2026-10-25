@@ -107,6 +107,7 @@ void MdlWriter::WriteHeader() {
     b_.PatchAt<uint8_t>(H_CONSTDIRLIGHTDOT, m_.constDirectionalLightDot);
     b_.PatchAt<uint8_t>(H_ROOTLOD, m_.rootLod);
     b_.PatchAt<uint8_t>(H_NUMALLOWEDROOTLODS, m_.numAllowedRootLods);
+    b_.PatchAt<uint8_t>(H_NUMALLOWEDROOTLODS, m_.numAllowedRootLods);
     b_.PatchAt<float>(H_FADEDISTANCE, m_.fadeDistance);
     Str(H_SURFACEPROPINDEX, 0, m_.surfaceProp);
     Str(H_UNKSTRINGOFFSET, 0, m_.unkString);
@@ -360,6 +361,7 @@ void MdlWriter::WriteSequences() {
         I(0x90, s.numIKRules);
         I(0xB4, s.cyclePose);
         I(0xC0, s.ikResetMask);
+        I(0xC4, s.unkC4);
         // pose keys (blends only)
         if (!s.poseKeys.empty()) {
             I(0xA0, Rel(p));
@@ -623,13 +625,21 @@ void MdlWriter::WriteTextures() {
 void MdlWriter::WriteKeyValues() {
     HdrHere(H_KEYVALUEINDEX);
     if (!m_.keyValues.empty()) {
-        std::string kv = "mdlkeyvalue\n{\n" + m_.keyValues + "}\n";
+        const std::string& kv = m_.keyValues;  // already "mdlkeyvalue { ... }" text, as studiomdl writes it
         b_.Bytes(kv.data(), kv.size());
         b_.U8(0);
         Hdr(H_KEYVALUESIZE, static_cast<int>(kv.size() + 1));
     }
     b_.Align(4);
     HdrHere(H_SRCBONETRANSFORMINDEX);
+    Hdr(H_NUMSRCBONETRANSFORM, static_cast<int>(m_.srcBoneTransforms.size()));
+    for (auto& t : m_.srcBoneTransforms) {
+        size_t p = b_.Tell();
+        b_.I32(0);
+        Str(p, p, t.bone);
+        for (float v : t.pre) b_.F32(v);
+        for (float v : t.post) b_.F32(v);
+    }
 }
 
 void MdlWriter::WriteLinearBones() {

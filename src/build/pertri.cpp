@@ -34,9 +34,10 @@ void BuildPerTriAABB(BuildContext& ctx) {
     pt = CPerTri();
     if (!ctx.qc.staticProp) return;  // version 0: header only
 
-    // LOD 0 triangles of the default model of every body part
+    // LOD 0 triangles of the default model of every body part. Like retail, each mesh
+    // vertex is its own point (vertices that only share a position are not merged).
     std::vector<Vec3> verts;
-    std::map<std::tuple<float, float, float>, uint32_t> vmap;
+    std::map<std::pair<const CMesh*, uint32_t>, uint32_t> vmap;
     std::vector<PTri> tris;
     for (auto& bp : ctx.out.bodyParts) {
         if (bp.models.empty()) continue;
@@ -48,7 +49,7 @@ void BuildPerTriAABB(BuildContext& ctx) {
                 PTri tri;
                 for (int c = 0; c < 3; c++) {
                     const Vec3& p = me.verts[idx[t + c]].pos;
-                    auto key = std::make_tuple(p.x, p.y, p.z);
+                    auto key = std::make_pair(&me, idx[t + c]);
                     auto it = vmap.find(key);
                     if (it == vmap.end()) {
                         uint32_t n = static_cast<uint32_t>(verts.size());

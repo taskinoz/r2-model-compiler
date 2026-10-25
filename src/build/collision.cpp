@@ -974,9 +974,12 @@ void BuildCollisionModel(BuildContext& ctx) {
             else
                 skip.insert(b);
         }
-        for (size_t gb = 0; gb < bones.size(); gb++) {
-            int lb = inst->globalToLocal[gb];
-            if (lb < 0 || skip.count(lb) || boneMap[lb] != lb) continue;
+        // solids follow the collision source's own joint order, as in studiomdl
+        for (size_t lbi = 0; lbi < inst->localToGlobal.size(); lbi++) {
+            int lb = static_cast<int>(lbi);
+            if (inst->localToGlobal[lb] < 0) continue;
+            size_t gb = static_cast<size_t>(inst->localToGlobal[lb]);
+            if (skip.count(lb) || boneMap[lb] != lb) continue;
             // faces with any vertex assigned to this bone (CopyFaceVertsByBone)
             std::set<int> verts;
             for (auto& f : inst->faces) {
@@ -1286,7 +1289,6 @@ void BuildCollisionModel(BuildContext& ctx) {
             ctx.out.physics.collisionBlock = hdrs.Data();
             if (!qc.joints) {
                 ctx.out.physics.staticCollisionCount = static_cast<int>(n);
-                if (bones.size() == 1) ctx.qc.flags |= STUDIOHDR_FLAGS_RESPAWN_800000;
             } else {
                 int index = 0;
                 for (auto& s : solids) {
@@ -1300,13 +1302,22 @@ void BuildCollisionModel(BuildContext& ctx) {
         }
     }
 
-    // expand the hull bounds by the collision AABB (CollisionModel_ExpandBBox)
+    // expand the hull bounds by the collision AABB (CollisionModel_ExpandBBox). The solid
+    // was posed by animation 0 frame 0; retail measures it unposed (bind pose), which
+    // differs only when that frame moves the root bone.
     if (!qc.joints && !ctx.out.sequences.empty()) {
+        Mat3x4 unpose;
+        if (!ctx.anims.empty()) {
+            std::vector<Mat3x4> b2w;
+            ctx.CalcBoneTransforms(ctx.anims[0], 0, b2w);
+            unpose = Invert(Concat(b2w[0], Invert(bones[0].boneToPose)));
+        }
         Vec3 mn(1e30f, 1e30f, 1e30f), mx(-1e30f, -1e30f, -1e30f);
         for (auto& h : solids[0].pieces)
             for (auto& v : h.verts) {
-                mn = Min(mn, v.F());
-                mx = Max(mx, v.F());
+                Vec3 p = Transform(unpose, v.F());
+                mn = Min(mn, p);
+                mx = Max(mx, p);
             }
         mn -= Vec3(0.25f, 0.25f, 0.25f);
         mx += Vec3(0.25f, 0.25f, 0.25f);

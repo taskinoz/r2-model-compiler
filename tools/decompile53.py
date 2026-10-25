@@ -6,9 +6,11 @@ removed, static prop vertices are rotated back, and the bind pose is written as 
 
 usage: python tools/decompile53.py model.mdl outdir
 """
+import collections
 import math
 import os
 import random
+import re
 import struct
 import sys
 import uuid
@@ -290,16 +292,18 @@ def matrix_quaternion(m):
     return ((m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s)
 
 
-def write_dmx(path, bones, skeleton, faces, loose=()):
+def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
     """A keyvalues2 DMX (model format 22) holding a skeleton and one mesh of polygons.
 
     skeleton: per bone (pos, RadianEuler rot), parent relative.
     faces: (material, piece, corners); a corner is (pos, normal, [(bone, weight)], extra)
-    with optional extra keys 'uv', 'uv2' and 'color' (RGBA floats 0-1). Corners with the
+    with optional extra keys 'uv', 'uv2', 'color' (RGBA floats 0-1) and 'tangent' (xyz, sign). Corners with the
     same position and weights within a piece share one vertex, so each piece imports as
     a connected mesh.
     loose: (pos, [(bone, weight)], piece) points no face uses, written as loose vertices
-    (retail collision pieces keep points such as cylinder-cap centres)."""
+    (retail collision pieces keep points such as cylinder-cap centres).
+    joint_order: bone indices in jointList order (default: bone order); the compiler builds
+    collision solids in this order."""
     rng = random.Random(os.path.basename(path))  # stable element ids for identical exports
     ids = (uuid.UUID(int=rng.getrandbits(128)) for _ in iter(int, 1))
     # keyvalues2 strings escape backslashes and quotes (material paths keep their slashes)
@@ -311,6 +315,8 @@ def write_dmx(path, bones, skeleton, faces, loose=()):
                 '"orientation" "quaternion" %s\n}' % (q(next(ids)), q(name), vec(pos), vec(quat)))
 
     joint_ids = [str(next(ids)) for _ in bones]
+    order = list(joint_order) if joint_order is not None else list(range(len(bones)))
+    slot = {b: k for k, b in enumerate(order)}  # bone -> jointList index (blend indices use it)
     children = {i: [] for i in range(-1, len(bones))}
     for i, b in enumerate(bones):
         children[b['parent']].append(i)
@@ -323,7 +329,7 @@ def write_dmx(path, bones, skeleton, faces, loose=()):
                     q(joint_ids[i]), q(bones[i]['name']), transform(bones[i]['name'], pos, matrix_quaternion(angle_matrix(rot))), kids))
 
     positions, weights = [], []                                  # per shared vertex
-    loop_pos, normals, uvs, uv2s, colors = [], [], [], [], []    # per polygon corner (loop)
+    loop_pos, normals, uvs, uv2s, colors, tangents = [], [], [], [], [], []  # per polygon corner (loop)
     shared = {}
     material_faces = {}                                          # material -> loops, -1 ends a polygon
 
@@ -343,6 +349,7 @@ def write_dmx(path, bones, skeleton, faces, loose=()):
             uvs.append(extra.get('uv'))
             uv2s.append(extra.get('uv2'))
             colors.append(extra.get('color'))
+            tangents.append(extra.get('tangent'))
         out.append(-1)
     for pos, wts, piece in loose:
         vertex(piece, pos, wts)
@@ -351,7 +358,7 @@ def write_dmx(path, bones, skeleton, faces, loose=()):
     for w in weights:
         padded = list(w) + [(0, 0.0)] * (joint_count - len(w))
         blend_w += [fmt(x[1]) for x in padded]
-        blend_i += [str(x[0]) for x in padded]
+        blend_i += [str(slot[x[0]]) for x in padded]
     loops = [q(str(i)) for i in range(len(loop_pos))]
     arr = lambda kind, items: '"%s" [%s]' % (kind, ', '.join(items))
     fmt_names = ['position$0', 'normal$0']
@@ -360,7 +367,8 @@ def write_dmx(path, bones, skeleton, faces, loose=()):
              '"normal$0" %s\n"normal$0Indices" %s' % (arr('vector3_array', [vec(n) for n in normals]), arr('int_array', loops))]
     for name, kind, values, default in (('texcoord$0', 'vector2_array', uvs, (0, 0)),
                                         ('texcoord$1', 'vector2_array', uv2s, (0, 0)),
-                                        ('color$0', 'vector4_array', colors, (1, 1, 1, 1))):
+                                        ('color$0', 'vector4_array', colors, (1, 1, 1, 1)),
+                                        ('tangent$0', 'vector4_array', tangents, (1, 0, 0, 1))):
         if any(v is not None for v in values):
             fmt_names.append(name)
             filled = [v if v is not None else default for v in values]
@@ -386,7 +394,7 @@ def write_dmx(path, bones, skeleton, faces, loose=()):
     roots = ',\n'.join([joint(r) for r in children[-1]] + ['"element" %s' % q(dag_id)])
     model = ('"DmeModel"\n{\n"id" "elementid" %s\n"name" "string" %s\n"children" "element_array"\n[\n%s\n]\n'
              '"jointList" "element_array"\n[\n%s\n]\n"transform" %s\n}') % (
-        q(model_id), q(mesh_name), roots, ',\n'.join('"element" %s' % q(j) for j in joint_ids),
+        q(model_id), q(mesh_name), roots, ',\n'.join('"element" %s' % q(joint_ids[b]) for b in order),
         transform(mesh_name, (0, 0, 0), (0, 0, 0, 1)))
     with open(path, 'w', newline='\n') as f:
         f.write('<!-- dmx encoding keyvalues2 1 format model 22 -->\n')
@@ -395,12 +403,12 @@ def write_dmx(path, bones, skeleton, faces, loose=()):
         f.write(model + '\n\n' + dag + '\n\n' + vertex_data + '\n')
 
 
-def write_dmx_mesh(path, bones, skeleton, polygons, material='phys', pieces=None, loose=()):
+def write_dmx_mesh(path, bones, skeleton, polygons, material='phys', pieces=None, loose=(), joint_order=None):
     """write_dmx for a collision mesh: polygons of (pos, normal, [(bone, weight)]) corners,
     one material, and an optional piece id per polygon."""
     write_dmx(path, bones, skeleton,
               [(material, pieces[k] if pieces else 0, [(p, n, w, {}) for p, n, w in poly]) for k, poly in enumerate(polygons)],
-              loose)
+              loose, joint_order)
 
 
 def collision_block_faces(d, h, bones):
@@ -815,6 +823,9 @@ def decompile(path, outdir):
         uv = struct.unpack_from('<2f', d, o + 40)
         return pos, nrm, uv, [(bn[k], w[k]) for k in range(nb)]
 
+    def vvd_tangent(i):
+        return struct.unpack_from('<4f', d, h['vvdOffset'] + vvd['tangentDataStart'] + i * 16)
+
     # vertex colours / second UVs (VVC), per VVD vertex; such models export DMX meshes
     vvc = mdl53.u(mdl53.VVC_HDR, d, h['vvcOffset']) if h['vvcSize'] else None
     has_uv2 = bool(vvc and h['flags'] & 0x2000000 and vvc['uv2DataStart'])
@@ -834,6 +845,20 @@ def decompile(path, outdir):
         qc.append('$cdmaterials "%s"' % c)
     surf = mdl53.cstr(d, h['surfacepropindex'])
     qc.append('$surfaceprop "%s"' % surf)
+    # $illumposition and $eyeposition take studiomdl's rotated axes: stored (-y, x, z)
+    il = h['illumposition']
+    qc.append('$illumposition %s %s %s' % (fmt(il[1]), fmt(-il[0]), fmt(il[2])))
+    if h['contents'] != 1:
+        qc.append('$contents %d' % h['contents'])  # exact mask (r2c extension)
+    if not h['phySize'] and h['mass'] != 1:
+        qc.append('$mass %.9g' % h['mass'])  # header mass of a model without physics (r2c extension)
+    if any(h['eyeposition']):
+        ey = h['eyeposition']
+        qc.append('$eyeposition %s %s %s' % (fmt(ey[1]), fmt(-ey[0]), fmt(ey[2])))
+    if any(h['view_bbmin']) or any(h['view_bbmax']):
+        qc.append('$cbox %s %s' % (' '.join(fmt(x) for x in h['view_bbmin']), ' '.join(fmt(x) for x in h['view_bbmax'])))
+    if h['numAllowedRootLODs']:
+        qc.append('$allowrootlods %d' % h['numAllowedRootLODs'])
     if h['fadeDistance'] != -1:
         qc.append('$fadedistance %s' % fmt(h['fadeDistance']))
     for flag, cmd in ((0x4, '$opaque'), (0x800, '$noforcedfade'), (0x10000, '$ambientboost'), (0x20000, '$donotcastshadows'),
@@ -847,6 +872,11 @@ def decompile(path, outdir):
         qc.append('$definebone "%s" "%s" %s %s %s %s %s %s 0 0 0 0 0 0' % (
             b['name'], parent, fmt(b['pos'][0]), fmt(b['pos'][1]), fmt(b['pos'][2]),
             fmt(math.degrees(ang[1])), fmt(math.degrees(ang[2])), fmt(math.degrees(ang[0]))))
+    # bones listed for bone merge (the flag cannot be derived; retail sets it per model)
+    if not static:
+        for b in bones:
+            if b['flags'] & 0x40000:
+                qc.append('$bonemerge "%s"' % b['name'])
 
     vtx = mdl53.parse_vtx(d, h['vtxOffset']) if h['vtxSize'] else None
     sz = mdl53.size(mdl53.BODYPART_FIELDS)
@@ -854,6 +884,23 @@ def decompile(path, outdir):
     num_lods = vtx['hdr']['numLODs'] if vtx else 1
     switch = [0.0] * num_lods
     first_smd = None
+    # LOD 0 meshes keep the source file name studiomdl stored (model name) when it is a
+    # plain relative .dmx path used once; otherwise they get generated names
+    source_names = collections.Counter()
+    for bpi in range(h['numbodyparts']):
+        bp = mdl53.u(mdl53.BODYPART_FIELDS, d, h['bodypartindex'] + bpi * sz)
+        for mi in range(bp['nummodels']):
+            md = mdl53.u(mdl53.MODEL_FIELDS, d, h['bodypartindex'] + bpi * sz + bp['modelindex'] + mi * mdl53.size(mdl53.MODEL_FIELDS))
+            source_names[md['name'].replace(chr(92), '/').lower()] += 1
+
+    def source_name(name):
+        n = name.replace(chr(92), '/')
+        parts = n.split('/')
+        if (source_names[n.lower()] != 1 or not n.lower().endswith('.dmx') or n.startswith('/') or ':' in n
+                or any(p in ('', '.', '..') for p in parts)):
+            return None
+        return name  # as written; the checks above use the normalised form
+
     for bpi in range(h['numbodyparts']):
         bo = h['bodypartindex'] + bpi * sz
         bp = mdl53.u(mdl53.BODYPART_FIELDS, d, bo)
@@ -888,23 +935,22 @@ def decompile(path, outdir):
                                 vv = verts[idx[t + c]]
                                 vi = vstart + mesh['vertexoffset'] + vv['origMeshVertID']
                                 pos, nrm, uv, w = vvd_vertex(vi)
+                                tan = vvd_tangent(vi)
                                 if static:
                                     pos = rotate(ROT_M90, pos)
                                     nrm = rotate(ROT_M90, nrm)
-                                tri.append((pos, nrm, uv, w, vvc_extra(vi) if vvc else None))
+                                    tan = tuple(rotate(ROT_M90, tan[:3])) + (tan[3],)
+                                extra = dict(vvc_extra(vi) if vvc else {}, uv=(uv[0], 1 - uv[1]), tangent=tan)
+                                tri.append((pos, nrm, w, extra))
                             tris.append((mat, tri))
-                smd_name = '%s_%s_lod%d.smd' % (base, md['name'].replace('/', '_').replace('\\', '_').replace('.', '_') or 'model%d' % mi, lod) \
-                    if False else '%s_bp%d_m%d_lod%d.smd' % (base, bpi, mi, lod)
+                # DMX keeps what SMD can't: vertex colours, second UVs and the stored tangents,
+                # which also decide which vertices studiomdl kept apart
+                smd_name = (lod == 0 and source_name(md['name'])) or '%s_bp%d_m%d_lod%d.dmx' % (base, bpi, mi, lod)
+                os.makedirs(os.path.dirname(os.path.join(outdir, smd_name)), exist_ok=True)
                 skel = [[(b['pos'], b['rot']) for b in bones]]
                 if static:
                     skel = [[((0, 0, 0), (0, 0, 0)) for b in bones]]
-                if vvc:
-                    # SMD has no vertex colours: write the mesh as DMX (V flipped, as for SMD)
-                    smd_name = smd_name[:-4] + '.dmx'
-                    write_dmx(os.path.join(outdir, smd_name), bones, skel[0],
-                              [(mat, 0, [(p, n, w, dict(e, uv=(uv[0], 1 - uv[1]))) for p, n, uv, w, e in tri]) for mat, tri in tris])
-                else:
-                    write_smd(os.path.join(outdir, smd_name), bones, skel, [(mat, [c[:4] for c in tri]) for mat, tri in tris])
+                write_dmx(os.path.join(outdir, smd_name), bones, skel[0], [(mat, 0, tri) for mat, tri in tris])
                 names.append(smd_name)
                 if lod:
                     lod_models.setdefault(lod, []).append((names[0], smd_name))
@@ -954,12 +1000,22 @@ def decompile(path, outdir):
         mtx = [list(a['local'][0:4]), list(a['local'][4:8]), list(a['local'][8:12])]
         if static:
             mtx = concat(ROT_M90, mtx)  # studiomdl re-applies the default rotation
+        att = '$attachment "%s" "%s"' % (mdl53.cstr(d, o + a['sznameindex']), bones[a['localbone']]['name'])
+        rot = [[a['local'][r * 4 + c] for c in range(3)] for r in range(3)]
+        orthonormal = all(abs(sum(rot[k][i] * rot[k][j] for k in range(3)) - (i == j)) < 1e-3 for i in range(3) for j in range(3))
+        if not orthonormal:
+            # not a rotation (retail has all-zero ones): the stored matrix as is (r2c extension)
+            qc.append('%s 0 0 0 matrix %s' % (att, ' '.join('%.9g' % v for v in a['local'])))
+            continue
         ang = matrix_angles(mtx)
-        qc.append('$attachment "%s" "%s" %s %s %s rotate %s %s %s' % (
-            mdl53.cstr(d, o + a['sznameindex']), bones[a['localbone']]['name'], fmt(mtx[0][3]), fmt(mtx[1][3]), fmt(mtx[2][3]),
+        qc.append('%s %s %s %s rotate %s %s %s' % (
+            att, fmt(mtx[0][3]), fmt(mtx[1][3]), fmt(mtx[2][3]),
             fmt(math.degrees(ang[1])), fmt(math.degrees(ang[2])), fmt(math.degrees(ang[0]))))
-    # hitboxes
-    if not (h['flags'] & 1):
+    # hitboxes: generated ones are usually empty in retail; a few models have generated boxes
+    if h['flags'] & 1:
+        if any(mdl53.u(mdl53.HBOXSET_FIELDS, d, h['hitboxsetindex'] + s * 12)['numhitboxes'] for s in range(h['numhitboxsets'])):
+            qc.append('$autohitboxes')
+    else:
         for s in range(h['numhitboxsets']):
             so = h['hitboxsetindex'] + s * 12
             hs = mdl53.u(mdl53.HBOXSET_FIELDS, d, so)
@@ -989,9 +1045,23 @@ def decompile(path, outdir):
         c = mdl53.u(mdl53.IKCHAIN_FIELDS, d, o)
         links = [mdl53.u(mdl53.IKLINK_FIELDS, d, o + c['linkindex'] + k * 0x1C) for k in range(c['numlinks'])]
         knee = links[0]['kneeDir'] if links else (0, 0, 0)
-        qc.append('$ikchain "%s" "%s" knee %s %s %s' % (mdl53.cstr(d, o + c['sznameindex']), bones[links[-1]['bone']]['name'], *(fmt(x) for x in knee)))
+        line = '$ikchain "%s" "%s" knee %s %s %s' % (mdl53.cstr(d, o + c['sznameindex']), bones[links[-1]['bone']]['name'], *(fmt(x) for x in knee))
+        if abs(c['unk_10'] - 0.707) > 1e-6:
+            line += ' unk %s' % fmt(c['unk_10'])
+        # retail chains can skip twist bones; spell the links out unless they are the
+        # end bone, its parent and its grandparent
+        chain = [l['bone'] for l in links]
+        if len(chain) == 3 and not (bones[chain[2]]['parent'] == chain[1] and bones[chain[1]]['parent'] == chain[0]):
+            line += ' links %s' % ' '.join('"%s"' % bones[b]['name'] for b in chain)
+        qc.append(line)
         chain_names.append(mdl53.cstr(d, o + c['sznameindex']))
         chain_ends.append(links[-1]['bone'] if links else -1)
+    # source bone transforms
+    for i in range(h['numsrcbonetransform']):
+        o = h['srcbonetransformindex'] + i * 100
+        nm = mdl53.cstr(d, o + struct.unpack_from('<i', d, o)[0])
+        xf = struct.unpack_from('<24f', d, o + 4)
+        qc.append('$srcbonetransform "%s" %s' % (nm, ' '.join('%.9g' % v for v in xf)))  # exact floats
     # include models
     for i in range(h['numincludemodels']):
         o = h['includemodelindex'] + i * 8
@@ -1002,8 +1072,11 @@ def decompile(path, outdir):
     # keyvalues
     if h['keyvaluesize']:
         kv = d[h['keyvalueindex']:h['keyvalueindex'] + h['keyvaluesize']].split(b'\0')[0].decode('latin1')
-        inner = kv.split('{', 1)[1].rsplit('}', 1)[0] if '{' in kv else kv
-        qc.append('$keyvalues\n{\n%s\n}' % inner.strip())
+        # one $keyvalues per "mdlkeyvalue { ... }" block: retail can hold several in a row
+        blocks = [b for b in re.split(r'(?m)^mdlkeyvalue\s*$', kv) if b.strip()] if kv.startswith('mdlkeyvalue') else [kv]
+        for blk in blocks:
+            inner = blk.split('{', 1)[1].rsplit('}', 1)[0] if '{' in blk else blk
+            qc.append('$keyvalues\n{\n%s\n}' % inner.strip())
 
     # animations
     anim_names = []
@@ -1088,9 +1161,11 @@ def decompile(path, outdir):
         if ai in anim_weight_names:
             opts.append('weightlist "%s"' % anim_weight_names[ai])
         opts += ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta)
-        anim_names.append(('a_' + name.replace('@', 'at_'), smd, opts, a))
+        anim_names.append((name, smd, opts, a))  # retail names, '@seq' included
         qc.append('$animation "%s" "%s" %s' % (anim_names[-1][0], smd, ' '.join(o for o in opts if not o.startswith('//'))))
     # sequences
+    node_names = [mdl53.cstr(d, struct.unpack_from('<i', d, h['localnodenameindex'] + 4 * i)[0])
+                  for i in range(h['numlocalnodes'])]
     for si in range(h['numlocalseq']):
         o = h['localseqindex'] + si * 0xE8
         s = mdl53.u(mdl53.SEQDESC_FIELDS, d, o)
@@ -1143,6 +1218,44 @@ def decompile(path, outdir):
             lines.append('\trealtime')
         lines.append('\tfadein %s' % fmt(s['fadeintime']))
         lines.append('\tfadeout %s' % fmt(s['fadeouttime']))
+        # transition nodes (1-based indices into the node name table; 0 = none)
+        if s['localentrynode'] or s['localexitnode']:
+            entry, exit_ = node_names[s['localentrynode'] - 1], node_names[s['localexitnode'] - 1]
+            if s['localentrynode'] == s['localexitnode'] and not s['nodeflags'] & 1:
+                lines.append('\tnode "%s"' % entry)
+            else:
+                lines.append('\t%s "%s" "%s"' % ('rtransition' if s['nodeflags'] & 1 else 'transition', entry, exit_))
+        # auto layers: retail stores zero ramps; flags beyond the named ones (0x2000) stay raw
+        for k in range(s['numautolayers']):
+            al = mdl53.u(mdl53.AUTOLAYER_FIELDS, d, o + s['autolayerindex'] + k * mdl53.size(mdl53.AUTOLAYER_FIELDS))
+            other = mdl53.cstr(d, h['localseqindex'] + al['iSequence'] * 0xE8 +
+                               struct.unpack_from('<i', d, h['localseqindex'] + al['iSequence'] * 0xE8 + 4)[0])
+            flags = al['flags']
+            ramp = [al[x] for x in ('start', 'peak', 'tail', 'end')]
+            if not flags & 0x4000:  # cycle ramps are written in frames
+                nf = max(1, anim_names[idxs[0]][3]['numframes'] - 1)
+                ramp = [x * nf for x in ramp]
+            opts = []
+            for bit, word in ((0x80, 'xfade'), (0x40, 'spline'), (0x200, 'noblend'), (0x1000, 'local'), (0x8000, 'realtime')):
+                if flags & bit:
+                    opts.append(word)
+                    flags &= ~bit
+            if flags & 0x4000:
+                po = h['localposeparamindex'] + al['iPose'] * 0x14
+                opts.append('poseparameter "%s"' % mdl53.cstr(d, po + struct.unpack_from('<i', d, po)[0]))
+                flags &= ~0x4000
+            if flags:
+                opts.append('flags %d' % flags)
+            lines.append('\tblendlayer "%s" %s %s' % (other, ' '.join(fmt(x) for x in ramp), ' '.join(opts)))
+        # activity modifiers (name offset, then a negate byte)
+        for k in range(s['numactivitymodifiers']):
+            ao = o + s['activitymodifierindex'] + k * 8
+            lines.append('\tactivitymodifier "%s"%s' % (mdl53.cstr(d, ao + struct.unpack_from('<i', d, ao)[0]),
+                                                       ' negate' if d[ao + 4] else ''))
+        if s['ikResetMask']:
+            lines.append('\tikresetmask %d' % s['ikResetMask'])
+        if s['unk_C4']:
+            lines.append('\tunk_c4 %d' % s['unk_C4'])
         first = anim_names[idxs[0]][3]
         for e in range(s['numevents']):
             eo = o + s['eventindex'] + e * 0x50
@@ -1164,7 +1277,6 @@ def decompile(path, outdir):
             L['client_or_node'] for sd in p['solids'] for L in sd['ledges'] if not L['has_children'])
         tris = []
         solid_names = []
-        import re
         for blk in re.findall(r'solid\s*\{([^}]*)\}', text):
             kv = dict(re.findall(r'"([^"]+)"\s+"([^"]*)"', blk))
             solid_names.append(kv.get('name', ''))
@@ -1243,8 +1355,18 @@ def decompile(path, outdir):
         skel = [[(b['pos'], b['rot']) for b in bones]] if not static else [[((0, 0, 0), (0, 0, 0)) for b in bones]]
         if all_matched:
             physics_file = base + '_physics.dmx'
+            # joints listed in retail's solid order, which the compiler builds solids in
+            by_name = {b['name'].lower(): i for i, b in enumerate(bones)}
+            order = [by_name[n.lower()] for n in solid_names if n.lower() in by_name]
+            order, wanted = [], order + list(range(len(bones)))
+            for i in wanted:  # parents first: a bone's missing ancestors go just before it
+                chain = []
+                while i != -1 and i not in order and i not in chain:
+                    chain.append(i)
+                    i = bones[i]['parent']
+                order += reversed(chain)
             write_dmx_mesh(os.path.join(outdir, physics_file), bones, skel[0], polygons, pieces=polygon_pieces,
-                           loose=loose_points)
+                           loose=loose_points, joint_order=order)
         else:
             physics_file = base + '_physics.smd'
             write_smd(os.path.join(outdir, physics_file), bones, skel, tris)

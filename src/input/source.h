@@ -40,6 +40,10 @@ struct SrcVertex {
     Vec4 color{1, 1, 1, 1};
     bool hasUV2 = false;
     Vec2 uv2;
+    // a stored tangent (DMX tangent$0: xyz, w = bitangent sign) is kept as given, and
+    // vertices that differ only in it stay apart, as studiomdl's output shows
+    bool hasTangent = false;
+    Vec4 tangent;
 };
 
 struct SrcFace {

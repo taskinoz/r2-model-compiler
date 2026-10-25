@@ -15,6 +15,7 @@ namespace r2c {
 enum : int {
     BONE_PHYSICALLY_SIMULATED = 0x01, BONE_PHYSICS_PROCEDURAL = 0x02, BONE_ALWAYS_PROCEDURAL = 0x04,
     BONE_SCREEN_ALIGN_SPHERE = 0x08, BONE_SCREEN_ALIGN_CYLINDER = 0x10,
+    BONE_IKCHAIN_INFLUENCE = 0x20,  // v52+: an IK chain's link bones and their descendants
     BONE_USED_BY_HITBOX = 0x100, BONE_USED_BY_ATTACHMENT = 0x200, BONE_USED_BY_VERTEX_LOD0 = 0x400,
     BONE_USED_BY_VERTEX_MASK = 0x3FC00, BONE_USED_BY_BONE_MERGE = 0x40000, BONE_USED_BY_ANYTHING = 0x7FF00,
     BONE_FIXED_ALIGNMENT = 0x100000,
@@ -65,6 +66,7 @@ struct CVertex {
     Vec3 pos;
     Vec3 normal;
     Vec4 tangent;
+    bool hasTangent = false;  // given by the source, not computed
     Vec2 uv;
     Vec2 uv2;
     uint8_t color[4] = {255, 255, 255, 255};
@@ -232,12 +234,13 @@ struct CSequence {
     };
     std::vector<ActMod> activityModifiers;
     int ikResetMask = 0;
+    int unkC4 = 0;
 };
 
 // Collision output produced by collision.cpp
 struct CPhysics {
     std::vector<uint8_t> phy;  // complete PHY file (header, solids, text)
-    float mass = 0;
+    float mass = 1;  // studiomdl's default; retail models without physics store 1.0
     int solidCount = 0;
     // Map-collision block (studiohdr collisionOffset) and its count
     std::vector<uint8_t> collisionBlock;
@@ -262,6 +265,11 @@ struct CompiledModel {
     int contents = 1;
     std::string surfaceProp = "default";
     std::string keyValues;
+    struct SrcBoneTransform {
+        std::string bone;
+        float pre[12], post[12];
+    };
+    std::vector<SrcBoneTransform> srcBoneTransforms;
     float fadeDistance = -1;
     uint8_t constDirectionalLightDot = 0;
     uint8_t rootLod = 0, numAllowedRootLods = 0;

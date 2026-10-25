@@ -95,6 +95,8 @@ void BuildContext::MakeStaticProp() {
             v.weights[0].weight = 1;
             v.pos = Transform(rotated, v.pos);
             v.normal = Rotate(rotated, v.normal);
+            Vec3 t = Rotate(rotated, Vec3(v.tangent.x, v.tangent.y, v.tangent.z));
+            v.tangent = {t.x, t.y, t.z, v.tangent.w};
         }
         if (qc.autoCenter) {
             // handled after bounds are known (see BuildMeshes)
@@ -111,7 +113,7 @@ void BuildContext::MakeStaticProp() {
         a->frameRangeSet = true;
     }
     for (auto& at : qc.attachments) {
-        at.local = Concat(rotated, at.local);
+        if (!at.exactMatrix) at.local = Concat(rotated, at.local);
         at.bone = "static_prop";
         at.rigid = false;
         at.absolute = false;
@@ -419,10 +421,10 @@ void BuildContext::BuildBones() {
         std::vector<int> childbone(bones.size(), -1);
         for (auto& ik : qc.ikChains) {
             // links are bone, parent, grandparent (studiomdl LinkIKChains)
-            int b2 = FindBone(ik.bone);
+            int b2 = FindBone(ik.links.size() == 3 ? ik.links[2] : ik.bone);
             if (b2 < 0) continue;
-            int b1 = bones[b2].parent;
-            int b0 = b1 >= 0 ? bones[b1].parent : -1;
+            int b1 = ik.links.size() == 3 ? FindBone(ik.links[1]) : bones[b2].parent;
+            int b0 = ik.links.size() == 3 ? FindBone(ik.links[0]) : (b1 >= 0 ? bones[b1].parent : -1);
             if (b0 < 0) continue;
             if (childbone[b0] == -1 || childbone[b0] == b1)
                 childbone[b0] = b1;
@@ -505,7 +507,7 @@ void BuildContext::RemapVertices() {
             const SrcVertex& v = s.verts[j];
             SrcVertex o = v;
             o.weights.clear();
-            Vec3 vdest, ndest;
+            Vec3 vdest, ndest, tdest;
             for (auto& w : v.weights) {
                 int k = s.localToGlobal[w.bone];
                 bool merged = false;
@@ -519,9 +521,15 @@ void BuildContext::RemapVertices() {
                 vdest += Transform(bones[k].boneToPose, local) * w.weight;
                 Vec3 ln = Rotate(invDest[k], v.normal);
                 ndest += Rotate(bones[k].boneToPose, ln) * w.weight;
+                Vec3 lt = Rotate(invDest[k], Vec3(v.tangent.x, v.tangent.y, v.tangent.z));
+                tdest += Rotate(bones[k].boneToPose, lt) * w.weight;
             }
             o.pos = vdest;
             o.normal = Normalize(ndest);
+            if (v.hasTangent) {
+                Vec3 t = Normalize(tdest);
+                o.tangent = {t.x, t.y, t.z, v.tangent.w};
+            }
             // keep the strongest three (merging may have changed order)
             std::stable_sort(o.weights.begin(), o.weights.end(),
                              [](const BoneWeight& a, const BoneWeight& b) { return a.weight > b.weight; });

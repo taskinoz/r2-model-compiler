@@ -35,6 +35,8 @@ bool SameVertex(const CVertex& a, const CVertex& b) {
     for (int i = 0; i < a.numBones; i++)
         if (a.bone[i] != b.bone[i] || std::fabs(a.weight[i] - b.weight[i]) > 1e-5f) return false;
     if (std::memcmp(a.color, b.color, 4) != 0) return false;
+    if (a.hasTangent != b.hasTangent) return false;
+    if (a.hasTangent && std::memcmp(&a.tangent, &b.tangent, sizeof(Vec4)) != 0) return false;
     return true;
 }
 
@@ -85,6 +87,8 @@ CVertex MakeVertex(const SrcVertex& sv, const std::vector<GBone>& bones,
     v.normal = sv.normal;
     v.uv = sv.uv;
     v.uv2 = sv.uv2;
+    v.tangent = sv.tangent;
+    v.hasTangent = sv.hasTangent;
     if (sv.hasColor) {
         for (int i = 0; i < 4; i++) v.color[i] = static_cast<uint8_t>(std::clamp((&sv.color.x)[i], 0.f, 1.f) * 255.f + 0.5f);
     }
@@ -145,6 +149,7 @@ void CalcTangents(CMesh& mesh, const std::vector<int>& minLod) {
         }
     }
     for (size_t i = 0; i < n; i++) {
+        if (mesh.verts[i].hasTangent) continue;
         Vec3 nrm = mesh.verts[i].normal;
         Vec3 s = sacc[i], t = tacc[i];
         if (Length(s) < 1e-12f) {
@@ -263,11 +268,10 @@ void BuildContext::BuildMeshes() {
                 if (lodInst[l] && lodInst[l]->gverts.empty() && !lodInst[l]->verts.empty())
                     Fatal("internal: LOD source %s was not remapped", lodInst[l]->label.c_str());
 
-            // materials of LOD 0, in global texture order
+            // materials of LOD 0 in the order the source first uses them (retail mesh order)
             std::vector<int> mats;
             for (size_t f = 0; f < base->faces.size(); f++)
                 if (std::find(mats.begin(), mats.end(), base->faceTexture[f]) == mats.end()) mats.push_back(base->faceTexture[f]);
-            std::sort(mats.begin(), mats.end());
 
             for (int mat : mats) {
                 MeshBuilder mb;
@@ -332,10 +336,7 @@ void BuildContext::BuildMeshes() {
                     }
                 om.meshes.push_back(std::move(mesh));
             }
-            float r = 0;
-            for (auto& m : om.meshes)
-                for (auto& v : m.verts) r = std::max(r, Length(v.pos));
-            om.boundingRadius = r;
+            om.boundingRadius = 0;  // retail v53 models always store 0 here
             obp.models.push_back(std::move(om));
         }
         out.bodyParts.push_back(std::move(obp));

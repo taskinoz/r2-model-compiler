@@ -557,6 +557,8 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                 const Attr* uv2Idx = attr({"textureCoordinates1Indices", "texcoord$1Indices"});
                 const Attr* col = attr({"colors", "color$0", "VertexPaint"});
                 const Attr* colIdx = attr({"colorsIndices", "color$0Indices", "VertexPaintIndices"});
+                const Attr* tan = attr({"tangents", "tangent$0"});
+                const Attr* tanIdx = attr({"tangentsIndices", "tangent$0Indices"});
                 const Attr* jw = attr({"jointWeights", "blendweights$0"});
                 const Attr* ji = attr({"jointIndices", "blendindices$0"});
                 const Attr* jc = vd->Get("jointCount");
@@ -608,6 +610,12 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                             int comps = col->Components();
                             for (int c = 0; c < 4; c++) (&v.color.x)[c] = c < comps ? col->floats[ci * comps + c] : 1.f;
                             v.hasColor = true;
+                        }
+                        if (tan && tanIdx && tan->Components() == 4 && loop < static_cast<int>(tanIdx->ints.size())) {
+                            int ti = tanIdx->ints[loop];
+                            Vec3 t = Normalize(Rotate(here, Vec3(tan->floats[ti * 4], tan->floats[ti * 4 + 1], tan->floats[ti * 4 + 2])));
+                            v.tangent = {t.x, t.y, t.z, tan->floats[ti * 4 + 3] < 0 ? -1.f : 1.f};
+                            v.hasTangent = true;
                         }
                         if (jw && ji && jointCount > 0 && !rigid) {
                             for (int k = 0; k < jointCount; k++) {

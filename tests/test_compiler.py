@@ -458,6 +458,73 @@ class CompilerRegressions(unittest.TestCase):
             self.assertEqual(tuple(vvc[colours + 4 * i:colours + 4 * i + 4]), (255, 0, 0, 255))
             self.assertEqual(struct.unpack_from('<2f', vvc, uv2 + 8 * i), (0.25, 0.25))  # V is flipped
 
+    def test_dmx_tangents_are_kept_and_keep_vertices_apart(self):
+        # Decompiled meshes carry retail's tangents (tangent$0). The compiler stores them as
+        # given, and corners that differ only in tangent stay separate vertices.
+        text = (ROOT / 'tests/dmx/cube_arm_kv2.dmx').read_text()
+        text = text.replace('"texcoord$0", ', '"texcoord$0", "tangent$0", ')
+        # one normal and one UV for every corner, so only positions and tangents differ
+        zeros = '[%s]' % ', '.join(['"0"'] * 24)
+        lines = text.split('\n')
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith(('"normal$0Indices"', '"texcoord$0Indices"')):
+                lines[i] = line[:line.index('[')] + zeros
+        text = '\n'.join(lines)
+        anchor = '\t"texcoord$0" "vector2_array"'
+        self.assertIn(anchor, text)
+
+        def build(name, tangent_indices):
+            extra = ('\t"tangent$0" "vector4_array" ["0.0 1.0 0.0 -1.0", "0.0 0.0 1.0 1.0"]\n'
+                     '\t"tangent$0Indices" "int_array" [%s]\n') % ', '.join('"%d"' % i for i in tangent_indices)
+            (self.work / (name + '.dmx')).write_text(text.replace(anchor, extra + anchor, 1))
+            output = self.compile('$modelname "%s.mdl"\n$body body "%s.dmx"\n$sequence idle "%s.dmx"\n' % ((name,) * 3), name)
+            data = output.read_bytes()
+            header = mdl53.Model(data).hdr
+            vvd = mdl53.u(mdl53.VVD_HDR, data, header['vvdOffset'])
+            count = vvd['numLODVertexes'][0]
+            tangents = [struct.unpack_from('<4f', data, header['vvdOffset'] + vvd['tangentDataStart'] + 16 * i)
+                        for i in range(count)]
+            return count, tangents
+
+        same, tangents = build('same', [0] * 24)
+        for t in tangents:
+            self.assertEqual(t, (0.0, 1.0, 0.0, -1.0))
+        split, tangents = build('split', [i % 2 for i in range(24)])
+        self.assertGreater(split, same)
+        self.assertIn((0.0, 0.0, 1.0, 1.0), tangents)
+
+    def test_retail_header_extensions_roundtrip(self):
+        # r2c extensions for retail values plain QC can't express: header mass without
+        # physics, an exact contents mask, source bone transforms and a non-rotation
+        # attachment matrix. A single-bone model also gets retail's 0x800000 flag.
+        (self.work / 'body.smd').write_text((ROOT / 'tests/box/box.smd').read_text())
+        pre = '1 0 0 0 0 1 0 0 0 0 1 0'
+        post = '1 0 0 0.25 0 1 0 0 0 0 1 0'
+        output = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n$sequence idle "body.smd"\n'
+                              '$mass 8\n$contents 2\n'
+                              '$srcbonetransform "root" %s %s\n' % (pre, post) +
+                              '$attachment "zero" "root" 0 0 0 matrix 0 0 0 0 0 0 0 0 0 0 0 0\n')
+        data = output.read_bytes()
+        header = mdl53.Model(data).hdr
+        self.assertEqual(header['mass'], 8.0)
+        self.assertEqual(header['contents'], 2)
+        self.assertTrue(header['flags'] & 0x800000)
+        self.assertEqual(header['numsrcbonetransform'], 1)
+        o = header['srcbonetransformindex']
+        self.assertEqual(mdl53.cstr(data, o + struct.unpack_from('<i', data, o)[0]), 'root')
+        self.assertEqual(struct.unpack_from('<12f', data, o + 52)[3], 0.25)
+        attachment = mdl53.u(mdl53.ATTACH_FIELDS, data, header['localattachmentindex'])
+        self.assertEqual(list(attachment['local']), [0.0] * 12)
+        qc_path = dc.decompile(output, self.work / 'decoded')
+        qc = Path(qc_path).read_text()
+        for line in ('$mass 8', '$contents 2', '$srcbonetransform "root"', 'matrix 0 0 0 0 0 0 0 0 0 0 0 0'):
+            self.assertIn(line, qc)
+        rebuilt = self.work / 'rebuilt.mdl'
+        run = subprocess.run([str(self.compiler), '-quiet', '-o', str(rebuilt), str(qc_path)],
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(roundtrip.compare(roundtrip.summary(output), roundtrip.summary(rebuilt)), [])
+
     def test_single_frame_retail_nan_event_cycle(self):
         (self.work / 'body.smd').write_text((ROOT / 'tests/box/box.smd').read_text())
         output = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n'

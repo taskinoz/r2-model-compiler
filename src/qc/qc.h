@@ -98,6 +98,7 @@ struct QcAttachment {
     std::string name, bone;
     Mat3x4 local;
     bool absolute = false, rigid = false;
+    bool exactMatrix = false;  // "matrix" (r2c extension): local is the stored bone-space matrix as is
     unsigned flags = 0;  // ATTACHMENT_FLAG_WORLD_ALIGN etc.
 };
 
@@ -130,6 +131,9 @@ struct QcIKChain {
     Vec3 knee;
     Vec3 center;
     float unk = 0.707f;  // Respawn chain value (cos 45 by default)
+    // explicit link bones, root first (r2c extension): retail chains can skip twist
+    // bones between the shoulder and elbow; default is bone, parent, grandparent
+    std::vector<std::string> links;
 };
 
 struct QcIKLock {
@@ -236,6 +240,7 @@ struct QcSequence {
     };
     std::vector<ActivityModifier> activityModifiers;
     int ikResetMask = 0;
+    int unkC4 = 0;  // unidentified seqdesc field at 0xC4 (r2c extension "unk_c4")
     bool isOverride = false;  // $declaresequence
 };
 
@@ -378,8 +383,17 @@ struct QcModelDef {
 
     int flags = 0;
     bool staticProp = false;
+    bool autoHitboxes = false;  // $autohitboxes (r2c extension): generate boxes like Valve's studiomdl
+    // $srcbonetransform (r2c extension): a bone's pre/post transforms as 3x4 matrices,
+    // which the engine applies to animations from included models
+    struct SrcBoneTransform {
+        std::string bone;
+        float pre[12] = {}, post[12] = {};
+    };
+    std::vector<SrcBoneTransform> srcBoneTransforms;
     bool autoCenter = false;
     Vec3 eyePosition;
+    float headerMass = -1;  // top-level $mass (r2c extension): header mass of a model without physics
     bool illumSet = false;
     Vec3 illumPosition;
     std::string illumBone;
