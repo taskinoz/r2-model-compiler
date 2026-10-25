@@ -31,7 +31,9 @@ Push-Location build; ctest --output-on-failure; Pop-Location
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Set `R2C_COMPILER` to test another executable. Add a regression test in
+GitHub Actions (`.github/workflows/ci.yml`) runs the same build and CTest on
+Windows for every push to `main` and every pull request, and keeps the executable
+as an artifact. Set `R2C_COMPILER` to test another executable. Add a regression test in
 `tests/test_compiler.py` for every feature. The existing tests show the pattern:
 - write a small SMD/QC with `dc.write_smd`;
 - compile it;

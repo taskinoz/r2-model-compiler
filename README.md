@@ -1,5 +1,7 @@
 # r2-model-compiler
 
+[![CI](https://github.com/taskinoz/r2-model-compiler/actions/workflows/ci.yml/badge.svg)](https://github.com/taskinoz/r2-model-compiler/actions/workflows/ci.yml)
+
 `r2studiomdl` is a model compiler for **Titanfall 2** (MDL v53). It reads a QC file with
 SMD or DMX sources and writes a single v53 `.mdl` file with its VTX, VVD, VVC and PHY
 data embedded, ready to load in game (for example through a Northstar mod). The QC

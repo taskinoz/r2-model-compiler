@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Python regression tests drive the compiled executable; CMake registers
+      # them only when it finds a Python 3 interpreter.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build (Release x64)
+        shell: cmd
+        run: build.bat
+
+      - name: Test
+        shell: pwsh
+        run: |
+          Push-Location build
+          $registered = ctest -N
+          if (-not ($registered -match 'compiler_regressions')) {
+              throw 'The Python regression tests were not registered (Python 3 not found by CMake).'
+          }
+          ctest --output-on-failure
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2studiomdl-win64
+          path: build/r2studiomdl.exe
+          retention-days: 14
