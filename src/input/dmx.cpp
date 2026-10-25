@@ -624,10 +624,14 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                             poly.push_back(idx);
                             continue;
                         }
-                        // triangle fan; studiomdl's winding flip as for SMD (a, c, b)
+                        // triangle fan; studiomdl's winding flip as for SMD (a, c, b). The fan
+                        // remembers its polygon (numbered by its first triangle), which
+                        // becomes one map-collision face, as Respawn's Maya pipeline does.
+                        const int polygon = static_cast<int>(src->faces.size());
                         for (size_t k = 1; k + 1 < poly.size(); k++) {
                             SrcFace face;
                             face.material = matIndex;
+                            face.polygon = polygon;
                             int base = static_cast<int>(src->vertices.size());
                             src->vertices.push_back(makeVert(poly[0]));
                             src->vertices.push_back(makeVert(poly[k]));

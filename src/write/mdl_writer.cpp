@@ -711,7 +711,7 @@ std::vector<uint8_t> MdlWriter::Run() {
         Hdr(H_PHYSIZE, static_cast<int>(phy.size()));
         b_.Append(phy);
     }
-    HdrHere(H_COLLISIONOFFSET);
+    if (!m_.physics.noMapCollision) HdrHere(H_COLLISIONOFFSET);
     if (!m_.physics.collisionBlock.empty()) {
         b_.Append(m_.physics.collisionBlock);
         Hdr(H_STATICCOLLISIONCOUNT, m_.physics.staticCollisionCount);

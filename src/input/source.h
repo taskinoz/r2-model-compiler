@@ -45,6 +45,7 @@ struct SrcVertex {
 struct SrcFace {
     int material = 0;  // index into Source::materials
     int v[3] = {0, 0, 0};  // indices into Source::vertices
+    int polygon = -1;      // source polygon (a DMX face) the triangle belongs to; -1 for SMD
 };
 
 struct Source {

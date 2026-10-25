@@ -90,6 +90,50 @@ class CompilerRegressions(unittest.TestCase):
         second = self.compile(qc2.replace('"test_', '"decompiled/test_').replace('"anim_', '"decompiled/anim_'), 'second')
         self.assertEqual(roundtrip.compare(roundtrip.summary(output), roundtrip.summary(second)), [])
 
+    def test_dmx_polygons_become_map_collision_faces(self):
+        # Retail map-collision faces are the source mesh's polygons (Maya quads), not a
+        # planarity merge: a slightly bent quad stays one face. DMX keeps polygons; SMD
+        # triangles fall back to merging by plane.
+        bones = [{'name': 'root', 'parent': -1}]
+        corners = [(0,0,0), (10,0,0), (10,10,0), (0,10,0), (0,0,10), (10,0,10), (10,10,10.2), (0,10,10)]
+        quads = [(0,3,2,1), (4,5,6,7), (0,1,5,4), (1,2,6,5), (2,3,7,6), (3,0,4,7)]
+        up = (0, 0, 1)
+        dc.write_dmx_mesh(str(self.work / 'phys.dmx'), bones, [((0,0,0), (0,0,0))],
+                          [[(corners[i], up, [(0, 1.0)]) for i in q] for q in quads])
+        tris = [('phys', [(corners[i], up, (0,0), [(0, 1.0)]) for i in (q[0], q[k], q[k + 1])])
+                for q in quads for k in (1, 2)]
+        dc.write_smd(self.work / 'phys.smd', bones, [[((0,0,0), (0,0,0))]], tris)
+        dc.write_smd(self.work / 'body.smd', bones, [[((0,0,0), (0,0,0))]], cube((5,5,5),(0,0,1)))
+        faces = {}
+        for ext in ('dmx', 'smd'):
+            output = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n$sequence idle "body.smd"\n'
+                                  '$collisionmodel "phys.%s" { }\n' % ext, ext)
+            data = output.read_bytes()
+            header = mdl53.Model(data).hdr
+            self.assertEqual(header['staticCollisionCount'], 1)
+            faces[ext] = struct.unpack_from('<i', data, header['collisionOffset'])[0]
+        self.assertEqual(faces, {'dmx': 6, 'smd': 7})
+        # the decompiler writes the block's faces back out as DMX polygons
+        qc2 = Path(dc.decompile(self.work / 'dmx.mdl', self.work / 'decompiled')).read_text()
+        self.assertIn('_physics.dmx"', qc2)
+        second = self.compile(qc2.replace('"dmx_', '"decompiled/dmx_').replace('"anim_', '"decompiled/anim_'), 'second')
+        self.assertEqual(roundtrip.compare(roundtrip.summary(self.work / 'dmx.mdl'), roundtrip.summary(second)), [])
+
+    def test_nomapcollision_omits_the_block(self):
+        (self.work / 'body.smd').write_text((ROOT / 'tests/box/box.smd').read_text())
+        output = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n$sequence idle "body.smd"\n'
+                              '$collisionmodel "body.smd" { $nomapcollision }\n')
+        data = output.read_bytes()
+        model = mdl53.Model(data)
+        header = model.hdr
+        self.assertGreater(header['phySize'], 0)
+        self.assertEqual((header['collisionOffset'], header['staticCollisionCount']), (0, 0))
+        self.assertEqual((model.bones()[0]['collisionIndex'], model.bones()[0]['collisionCount']), (0, 0))
+        qc2 = Path(dc.decompile(output, self.work / 'decompiled')).read_text()
+        self.assertIn('$nomapcollision', qc2)
+        second = self.compile(qc2.replace('"test_', '"decompiled/test_').replace('"anim_', '"decompiled/anim_'), 'second')
+        self.assertEqual(roundtrip.compare(roundtrip.summary(output), roundtrip.summary(second)), [])
+
     def test_animation_reencoding_and_selected_frame_decode(self):
         bones = [{'name':'root','parent':-1}, {'name':'tip','parent':0}]
         bind = [((0,0,0),(0,0,0)), ((6000,0,0),(0,0,0))]

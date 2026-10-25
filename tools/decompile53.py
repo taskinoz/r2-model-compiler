@@ -8,8 +8,10 @@ usage: python tools/decompile53.py model.mdl outdir
 """
 import math
 import os
+import random
 import struct
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mdl53  # noqa: E402
@@ -270,6 +272,119 @@ def write_smd(path, bones, skeleton_frames, tris=None):
                         line += ' %d %s' % (bi, fmt(w))
                     f.write(line + '\n')
             f.write('end\n')
+
+
+def matrix_quaternion(m):
+    """3x4 rotation -> (x, y, z, w)."""
+    tr = m[0][0] + m[1][1] + m[2][2]
+    if tr > 0:
+        s = math.sqrt(tr + 1.0) * 2
+        return ((m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s, 0.25 * s)
+    if m[0][0] > m[1][1] and m[0][0] > m[2][2]:
+        s = math.sqrt(1.0 + m[0][0] - m[1][1] - m[2][2]) * 2
+        return (0.25 * s, (m[0][1] + m[1][0]) / s, (m[0][2] + m[2][0]) / s, (m[2][1] - m[1][2]) / s)
+    if m[1][1] > m[2][2]:
+        s = math.sqrt(1.0 + m[1][1] - m[0][0] - m[2][2]) * 2
+        return ((m[0][1] + m[1][0]) / s, 0.25 * s, (m[1][2] + m[2][1]) / s, (m[0][2] - m[2][0]) / s)
+    s = math.sqrt(1.0 + m[2][2] - m[0][0] - m[1][1]) * 2
+    return ((m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s)
+
+
+def write_dmx_mesh(path, bones, skeleton, polygons, material='phys'):
+    """A keyvalues2 DMX (model format 22) holding a skeleton and one mesh made of
+    polygons. skeleton: per bone (pos, RadianEuler rot), parent relative. polygons: lists
+    of (pos, normal, [(bone, weight)]) corners; each corner is weighted to one bone."""
+    rng = random.Random(os.path.basename(path))  # stable element ids for identical exports
+    ids = (uuid.UUID(int=rng.getrandbits(128)) for _ in iter(int, 1))
+    q = lambda s: '"%s"' % s
+    vec = lambda v: q(' '.join(fmt(x) for x in v))
+
+    def transform(name, pos, quat):
+        return ('"DmeTransform"\n{\n"id" "elementid" %s\n"name" "string" %s\n"position" "vector3" %s\n'
+                '"orientation" "quaternion" %s\n}' % (q(next(ids)), q(name), vec(pos), vec(quat)))
+
+    joint_ids = [str(next(ids)) for _ in bones]
+    children = {i: [] for i in range(-1, len(bones))}
+    for i, b in enumerate(bones):
+        children[b['parent']].append(i)
+
+    def joint(i):
+        pos, rot = skeleton[i]
+        kids = ',\n'.join(joint(c) for c in children[i])
+        return ('"DmeJoint"\n{\n"id" "elementid" %s\n"name" "string" %s\n"transform" %s\n'
+                '"children" "element_array"\n[\n%s\n]\n}' % (
+                    q(joint_ids[i]), q(bones[i]['name']), transform(bones[i]['name'], pos, matrix_quaternion(angle_matrix(rot))), kids))
+
+    positions, normals, weights, indices, faces = [], [], [], [], []
+    for poly in polygons:
+        for pos, nrm, wts in poly:
+            faces.append(len(positions))
+            positions.append(pos)
+            normals.append(nrm)
+            weights.append(wts[0][1])
+            indices.append(wts[0][0])
+        faces.append(-1)
+    loops = [str(i) for i in range(len(positions))]
+    arr = lambda kind, items: '"%s" [%s]' % (kind, ', '.join(items))
+    mesh_id, vd_id, dag_id, model_id = (str(next(ids)) for _ in range(4))
+    vertex_data = ('"DmeVertexData"\n{\n"id" "elementid" %s\n"name" "string" "bind"\n'
+                   '"vertexFormat" "string_array" ["position$0", "normal$0", "blendweights$0", "blendindices$0"]\n'
+                   '"jointCount" "int" "1"\n'
+                   '"position$0" %s\n"position$0Indices" %s\n"normal$0" %s\n"normal$0Indices" %s\n'
+                   '"blendweights$0" %s\n"blendindices$0" %s\n}') % (
+        q(vd_id), arr('vector3_array', [vec(p) for p in positions]), arr('int_array', [q(i) for i in loops]),
+        arr('vector3_array', [vec(n) for n in normals]), arr('int_array', [q(i) for i in loops]),
+        arr('float_array', [q(fmt(w)) for w in weights]), arr('int_array', [q(str(i)) for i in indices]))
+    dag = ('"DmeDag"\n{\n"id" "elementid" %s\n"name" "string" "physics"\n"shape" "DmeMesh"\n{\n'
+           '"id" "elementid" %s\n"name" "string" "physics"\n"currentState" "element" %s\n'
+           '"baseStates" "element_array" ["element" %s]\n"faceSets" "element_array"\n[\n"DmeFaceSet"\n{\n'
+           '"id" "elementid" %s\n"name" "string" %s\n"material" "DmeMaterial"\n{\n"id" "elementid" %s\n'
+           '"name" "string" %s\n"mtlName" "string" %s\n}\n"faces" %s\n}\n]\n}\n"transform" %s\n}') % (
+        q(dag_id), q(mesh_id), q(vd_id), q(vd_id), q(next(ids)), q(material), q(next(ids)), q(material), q(material),
+        arr('int_array', [q(str(i)) for i in faces]), transform('physics', (0, 0, 0), (0, 0, 0, 1)))
+    roots = ',\n'.join([joint(r) for r in children[-1]] + ['"element" %s' % q(dag_id)])
+    model = ('"DmeModel"\n{\n"id" "elementid" %s\n"name" "string" "physics"\n"children" "element_array"\n[\n%s\n]\n'
+             '"jointList" "element_array"\n[\n%s\n]\n"transform" %s\n}') % (
+        q(model_id), roots, ',\n'.join('"element" %s' % q(j) for j in joint_ids),
+        transform('physics', (0, 0, 0), (0, 0, 0, 1)))
+    with open(path, 'w', newline='\n') as f:
+        f.write('<!-- dmx encoding keyvalues2 1 format model 22 -->\n')
+        f.write('"DmElement"\n{\n"id" "elementid" %s\n"name" "string" "physics"\n"skeleton" "element" %s\n'
+                '"model" "element" %s\n}\n\n' % (q(next(ids)), q(model_id), q(model_id)))
+        f.write(model + '\n\n' + dag + '\n\n' + vertex_data + '\n')
+
+
+def collision_block_faces(d, h, bones):
+    """Map-collision block entries as (vertices, faces); each face lists its vertex
+    indices in order around its plane normal. Retail faces are the source mesh's
+    polygons, so they carry the grouping that triangle sources lose."""
+    count = h['staticCollisionCount']
+    if count <= 0:
+        count = max([b['collisionIndex'] + b['collisionCount'] for b in bones if b['collisionCount']] or [0])
+    if count <= 0 or not h['collisionOffset']:
+        return []
+    out = []
+    for i in range(count):
+        base = h['collisionOffset'] + i * 20
+        fc, fb, ec, vc, off = struct.unpack_from('<5i', d, base)
+        o = base + off
+        planes = [struct.unpack_from('<4f', d, o + 16 * k) for k in range(fb)]
+        eo = o + 16 * fb
+        edges = [struct.unpack_from('<6f4B', d, eo + 28 * k) for k in range(ec)]
+        verts = [struct.unpack_from('<3f', d, eo + 28 * ec + 12 * k) for k in range(vc)]
+        faces = []
+        for s in range(fc):
+            loop = sorted({v for e in edges if s in e[6:8] for v in e[8:10]})
+            n = planes[s][:3]
+            c = [sum(verts[v][k] for v in loop) / len(loop) for k in range(3)]
+            a = (1, 0, 0) if abs(n[0]) < 0.9 else (0, 1, 0)
+            u = (n[1] * a[2] - n[2] * a[1], n[2] * a[0] - n[0] * a[2], n[0] * a[1] - n[1] * a[0])
+            w = (n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0])
+            rel = lambda v: [verts[v][k] - c[k] for k in range(3)]
+            loop.sort(key=lambda v: math.atan2(sum(x * y for x, y in zip(rel(v), w)), sum(x * y for x, y in zip(rel(v), u))))
+            faces.append(loop)
+        out.append((verts, faces))
+    return out
 
 
 def decode_ik_rules(d, h, ai):
@@ -992,6 +1107,13 @@ def decompile(path, outdir):
             for k in range(3):
                 lm[k][3] = b['pos'][k]
             world.append(concat(world[b['parent']], lm) if b['parent'] >= 0 else lm)
+        # The map-collision block holds each piece's faces as the source mesh's polygons
+        # (in the same solid space as the PHY points); with it the physics mesh is
+        # written as DMX polygons, so the compiler rebuilds the same faces.
+        block = collision_block_faces(d, h, bones)
+        unused_entries = list(range(len(block)))
+        polygons = []
+        all_matched = bool(block)
         for si, s in enumerate(p['solids']):
             pts = [phylib.ivp_to_hl(q[:3]) for q in s['points']]
             bone = 0
@@ -1007,28 +1129,59 @@ def decompile(path, outdir):
                 radius = math.sqrt(max(0., 1 - z*z))
                 angle = piece * math.pi * (3 - math.sqrt(5))
                 piece_normal = (radius * math.cos(angle), radius * math.sin(angle), z)
+
+                def corner(pt):
+                    normal = piece_normal
+                    if jointed:
+                        pt = transform(world[bone], pt)
+                        normal = rotate(world[bone], normal)
+                    elif static:
+                        pt = rotate(ROT_M90, pt)
+                        normal = rotate(ROT_M90, normal)
+                    return pt, normal
                 for t in L['tris']:
                     tri = []
                     for c in (0, 2, 1):
-                        index = t['edges'][c]['start']
-                        pt, normal = pts[index], piece_normal
-                        if jointed:
-                            pt = transform(world[bone], pt)
-                            normal = rotate(world[bone], normal)
-                        elif static:
-                            pt = rotate(ROT_M90, pt)
-                            normal = rotate(ROT_M90, normal)
+                        pt, normal = corner(pts[t['edges'][c]['start']])
                         tri.append((pt, normal, (0, 0), [(bone, 1.0)]))
                     tris.append(('phys', tri))
+                # the block entry with this piece's vertices supplies its polygons
+                piece_pts = [pts[i] for i in sorted({e['start'] for t in L['tris'] for e in t['edges']})]
+                match = None
+                for k in unused_entries:
+                    verts = block[k][0]
+                    if len(verts) == len(piece_pts) and all(
+                            min(math.dist(v, q2) for q2 in piece_pts) < 1e-3 for v in verts):
+                        match = k
+                        break
+                if match is None:
+                    all_matched = False
+                    continue
+                unused_entries.remove(match)
+                verts, faces = block[match]
+                for loop in faces:
+                    poly = []
+                    for vi in loop:
+                        pt, normal = corner(verts[vi])
+                        poly.append((pt, normal, [(bone, 1.0)]))
+                    polygons.append(poly)
         skel = [[(b['pos'], b['rot']) for b in bones]] if not static else [[((0, 0, 0), (0, 0, 0)) for b in bones]]
-        write_smd(os.path.join(outdir, base + '_physics.smd'), bones, skel, tris)
+        if all_matched:
+            physics_file = base + '_physics.dmx'
+            write_dmx_mesh(os.path.join(outdir, physics_file), bones, skel[0], polygons)
+        else:
+            physics_file = base + '_physics.smd'
+            write_smd(os.path.join(outdir, physics_file), bones, skel, tris)
         mass = re.search(r'"totalmass"\s+"([^"]+)"', text)
         cmd = '$collisionjoints' if jointed else '$collisionmodel'
-        lines = ['%s "%s_physics.smd"\n{' % (cmd, base)]
+        lines = ['%s "%s"\n{' % (cmd, physics_file)]
         if mass:
             lines.append('\t$mass %s' % mass.group(1))
         if '"concave" "1"' in text:
             lines.append('\t$concave')
+        # retail models built without the map-collision block (collisionOffset 0)
+        if not h['collisionOffset']:
+            lines.append('\t$nomapcollision')
         # several convex pieces under one joint (no "concave" key in retail's text)
         if jointed and any(len([L for L in s['ledges'] if not L['has_children']]) > 1 for s in p['solids']):
             lines.append('\t$concaveperjoint')

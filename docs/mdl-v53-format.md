@@ -204,8 +204,12 @@ example, a sequence may weight the root 0 although its animation stores root rec
 - **Jointed models:** the header count is 0, and each bone that owns a solid stores its
   collision index and count (bone +0xD4 and +0xD6).
 - **Models without PHY:** every bone stores (0, 0).
-- Retail hulls keep collinear points on hull edges and split near-coplanar faces
-  slightly differently from a fresh hull build.
+- **Faces are source polygons.** Retail brush faces are the collision mesh's polygons
+  (Maya quads and n-gons): 33,223 triangles, 39,523 quads and 2,404 larger polygons.
+  Exactly coplanar neighbours stay apart; slightly bent quads (up to 0.01 units off
+  plane) stay one face. A planarity merge cannot reproduce this; keeping DMX polygons
+  can.
+- Retail keeps points lying on a hull edge as vertices; a fresh hull drops them.
 
 ## Open questions
 

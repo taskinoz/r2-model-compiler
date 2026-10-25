@@ -242,6 +242,7 @@ struct CPhysics {
     // Map-collision block (studiohdr collisionOffset) and its count
     std::vector<uint8_t> collisionBlock;
     int staticCollisionCount = 0;
+    bool noMapCollision = false;  // header collisionOffset stays 0, as in the retail models without a block
 };
 
 // Per-triangle AABB tree for static props

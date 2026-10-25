@@ -49,7 +49,10 @@ keeps the executable as an artifact. Set `R2C_COMPILER` to test another executab
 - `tools/mdl53.py`: independent v53 reader (header, bones, sequences, animations,
   RLE decode). Use it for surveys and byte-level checks.
 - `tools/decompile53.py`: v53 `.mdl` to QC + SMD (+ `.vrd`/`.txt` procedural files),
-  written so that the compiler can rebuild the model. `decompile(path, out_dir)`
+  written so that the compiler can rebuild the model. When the model has a
+  map-collision block, the physics mesh is written as a keyvalues2 DMX
+  (`write_dmx_mesh`) whose polygons are the block's faces, so the compiler rebuilds
+  retail's faces; legacy models without the block get `$nomapcollision`. `decompile(path, out_dir)`
   returns the QC path. It also exposes decoders: `decode_procedural`,
   `decode_ui_panels`, `decode_ik_rules`, `ui_panel_hash`, `write_smd`.
 - `tools/roundtrip.py`:

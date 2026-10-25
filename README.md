@@ -36,10 +36,9 @@ IK rules, procedural bones and weapon UI panels.
   colours and a second UV set (from DMX).
 
 All 602 retail multiplayer models and 3,422 unique single-player models decompile and
-recompile with it. 559 and 3,223 of them match the original in every compared field.
-The remainder are documented: mostly collision hulls that merge near-coplanar faces
-differently, sub-inch animation re-quantization, and a few retail models built by older
-tools. See [VALIDATION.md](VALIDATION.md) for the evidence and in-game checks.
+recompile with it. 587 and 3,384 of them match the original in every compared field.
+The remainder are documented: sub-inch animation re-quantization, a few collision pieces
+off by a vertex or two, and some retail data quirks. See [VALIDATION.md](VALIDATION.md) for the evidence and in-game checks.
 
 ## Quick start
 
@@ -151,6 +150,33 @@ $uipanel "models/weapons/attachments/my_counter"
   matter), and the length counting the terminating nul.
 - At most 256 vertices and 64 faces; only the first 32 faces can be `ccw`.
 
+### Collision faces and the map-collision block
+
+Besides the PHY physics data, a Titanfall 2 model with collision carries a
+map-collision block: each convex piece stored as a brush of planes, edges and
+vertices. Respawn's faces are the polygons of the source collision mesh (Maya quads and
+n-gons), not a planarity merge.
+
+- **DMX:** each polygon of a DMX collision mesh becomes one face, as Respawn's
+  pipeline does. A slightly bent quad stays one face.
+- **SMD:** an SMD holds only triangles, so the compiler merges triangles that lie on
+  one plane.
+
+To match retail collision, export the collision mesh from Blender or Maya as DMX with
+its quads intact. Decompiled models write their physics mesh as DMX for the same
+reason.
+
+`$nomapcollision` inside a `$collisionmodel`/`$collisionjoints` block writes the PHY
+data but no map-collision block. A few retail models are built this way.
+
+```
+$collisionmodel "props_phys.dmx"
+{
+	$mass 40
+	$concave
+}
+```
+
 ### Vertex colours and a second UV set
 
 A v53 model can carry per-vertex colours and a second UV set (UV2) for materials that
@@ -245,8 +271,8 @@ collects the v53 format facts the compiler relies on.
 - Output targets Titanfall 2 v53 only. Titanfall 1 and Apex Legends model files are not
   inputs; the compiler reads QC/SMD/DMX.
 - The remaining retail differences are listed in VALIDATION.md. Some animations
-  differ by 0.28-0.92 inches after re-quantization, and a few collision hulls by 1-3
-  faces or vertices.
+  differ by 0.28-0.92 inches after re-quantization, and a few collision pieces by one or
+  two vertices (retail keeps points lying on hull edges).
 - Crowbar's command line is reproduced in a test, but its GUI has not been driven
   automatically.
 

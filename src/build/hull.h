@@ -28,6 +28,7 @@ inline double DLen(const DVec3& a) { return std::sqrt(DDot(a, a)); }
 struct Hull {
     std::vector<DVec3> verts;                  // only points on the hull
     std::vector<std::array<int, 3>> tris;      // CCW seen from outside
+    std::vector<int> triPolygon;               // source polygon per triangle (-1 = none); may be empty
     bool valid = false;
 };
 

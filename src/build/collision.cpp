@@ -385,30 +385,54 @@ std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int
         DVec3 n;
         double d;
         std::vector<int> tris;
+        int polygon = -1;
+        DVec3 areaNormal;  // sum of the member triangles' cross products
     };
     std::vector<Face> fs;
     std::vector<int> triFace(h.tris.size());
     double scale = 0;
     for (auto& v : h.verts) scale = std::max(scale, DLen(v));
     double dEps = std::max(1e-3, scale * 1e-5);
+    std::map<int, int> polygonFace;
     for (size_t t = 0; t < h.tris.size(); t++) {
         const DVec3 &a = h.verts[h.tris[t][0]], &b = h.verts[h.tris[t][1]], &c = h.verts[h.tris[t][2]];
-        DVec3 n = DCross(b - a, c - a);
+        DVec3 cross = DCross(b - a, c - a);
+        DVec3 n = cross;
         double l = DLen(n);
         if (l > 0) n = n * (1 / l);
         double d = DDot(n, a);
+        int polygon = t < h.triPolygon.size() ? h.triPolygon[t] : -1;
         int f = -1;
-        for (size_t k = 0; k < fs.size(); k++)
-            if (DDot(fs[k].n, n) > 0.99999 && std::fabs(fs[k].d - d) < dEps) {
-                f = static_cast<int>(k);
-                break;
-            }
+        if (polygon >= 0) {
+            // one face per source polygon, even when slightly bent or coplanar with
+            // a neighbouring polygon
+            auto it = polygonFace.find(polygon);
+            if (it != polygonFace.end()) f = it->second;
+        } else {
+            for (size_t k = 0; k < fs.size(); k++)
+                if (fs[k].polygon < 0 && DDot(fs[k].n, n) > 0.99999 && std::fabs(fs[k].d - d) < dEps) {
+                    f = static_cast<int>(k);
+                    break;
+                }
+        }
         if (f < 0) {
-            fs.push_back({n, d, {}});
+            fs.push_back({n, d, {}, polygon, DVec3()});
             f = static_cast<int>(fs.size() - 1);
+            if (polygon >= 0) polygonFace[polygon] = f;
         }
         fs[f].tris.push_back(static_cast<int>(t));
+        fs[f].areaNormal = fs[f].areaNormal + cross;
         triFace[t] = f;
+    }
+    // a polygon face's plane: its area-weighted normal, pushed out to its outermost vertex
+    for (auto& f : fs) {
+        if (f.polygon < 0 || f.tris.size() < 2) continue;
+        double l = DLen(f.areaNormal);
+        if (l <= 0) continue;
+        f.n = f.areaNormal * (1 / l);
+        f.d = -1e300;
+        for (int t : f.tris)
+            for (int c = 0; c < 3; c++) f.d = std::max(f.d, DDot(f.n, h.verts[h.tris[t][c]]));
     }
     // directed edge -> face, boundary edges per face
     std::map<std::pair<int, int>, int> dirFace;
@@ -509,6 +533,122 @@ bool MakeHull(const std::vector<Vec3>& pts, Hull& out) {
     return out.valid;
 }
 
+// Source polygons touching each point, keyed by exact position (hull vertices are
+// copies of the input points), and each polygon's points.
+using PointKey = std::array<double, 3>;
+struct PointPolygons {
+    std::map<PointKey, std::set<int>> byPoint;
+    std::map<int, std::set<PointKey>> points;
+    bool empty() const { return byPoint.empty(); }
+};
+
+void AddPolygonPoint(PointPolygons& map, const Vec3& p, int polygon) {
+    if (polygon < 0) return;
+    PointKey k{static_cast<double>(p.x), static_cast<double>(p.y), static_cast<double>(p.z)};
+    map.byPoint[k].insert(polygon);
+    map.points[polygon].insert(k);
+}
+
+// Tags each hull triangle with the source polygon all three of its corners belong to,
+// so the map-collision face keeps the modelled polygon (retail faces follow the
+// source mesh's quads and n-gons, not a planarity test).
+void TagPolygons(Hull& h, const PointPolygons& index) {
+    if (index.empty()) return;
+    const auto& map = index.byPoint;
+    // hull welding can move a vertex slightly off its input point
+    auto lookup = [&](const DVec3& v) -> const std::set<int>* {
+        auto it = map.find({v.x, v.y, v.z});
+        if (it != map.end()) return &it->second;
+        const std::set<int>* best = nullptr;
+        double bestDist = 1e-3 * std::max(1.0, DLen(v) * 1e-3);
+        for (auto& [k, polys] : map) {
+            double dist = DLen(DVec3(k[0], k[1], k[2]) - v);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = &polys;
+            }
+        }
+        return best;
+    };
+    h.triPolygon.assign(h.tris.size(), -1);
+    // Pieces that touch flush share positions, so a neighbouring piece's coplanar
+    // polygon can also contain a triangle's corners; prefer the polygon whose points
+    // are mostly this hull's own vertices.
+    std::set<PointKey> hullPoints;
+    for (auto& v : h.verts) hullPoints.insert({v.x, v.y, v.z});
+    std::map<int, double> ownShare;
+    auto ownPolygon = [&](const std::set<int>& candidates) {
+        int best = -1;
+        double bestShare = -1;
+        for (int p : candidates) {
+            auto it = ownShare.find(p);
+            if (it == ownShare.end()) {
+                const auto& pts = index.points.at(p);
+                int inside = 0;
+                for (auto& k : pts) inside += hullPoints.count(k) ? 1 : 0;
+                it = ownShare.emplace(p, static_cast<double>(inside) / pts.size()).first;
+            }
+            if (it->second > bestShare) {
+                bestShare = it->second;
+                best = p;
+            }
+        }
+        return best;
+    };
+    for (size_t t = 0; t < h.tris.size(); t++) {
+        std::set<int> common;
+        for (int c = 0; c < 3; c++) {
+            const std::set<int>* polys = lookup(h.verts[h.tris[t][c]]);
+            if (!polys) {
+                common.clear();
+                break;
+            }
+            if (c == 0) {
+                common = *polys;
+            } else {
+                std::set<int> keep;
+                for (int p : common)
+                    if (polys->count(p)) keep.insert(p);
+                common.swap(keep);
+            }
+            if (common.empty()) break;
+        }
+        if (!common.empty()) h.triPolygon[t] = ownPolygon(common);
+    }
+    // A slightly bent polygon can make the hull pick a vertex outside it; such a
+    // triangle joins the polygon it shares an edge with when it lies nearly in that
+    // polygon's plane (a 13-sided cap stays one face instead of 12-gon + triangle).
+    auto triNormal = [&](size_t t) {
+        const DVec3 &a = h.verts[h.tris[t][0]], &b = h.verts[h.tris[t][1]], &c = h.verts[h.tris[t][2]];
+        return DCross(b - a, c - a);
+    };
+    std::map<int, DVec3> polygonNormal;
+    for (size_t t = 0; t < h.tris.size(); t++)
+        if (h.triPolygon[t] >= 0) polygonNormal[h.triPolygon[t]] = polygonNormal[h.triPolygon[t]] + triNormal(t);
+    for (size_t t = 0; t < h.tris.size(); t++) {
+        if (h.triPolygon[t] >= 0) continue;
+        std::map<int, int> shared;
+        for (int c = 0; c < 3; c++) {
+            if (const std::set<int>* polys = lookup(h.verts[h.tris[t][c]]))
+                for (int p : *polys) shared[p]++;
+        }
+        DVec3 n = triNormal(t);
+        double ln = DLen(n), best = 0.995;
+        for (auto& [p, count] : shared) {
+            auto pn = polygonNormal.find(p);
+            if (count < 2 || pn == polygonNormal.end() || ln <= 0 || DLen(pn->second) <= 0) continue;
+            double dot = DDot(n, pn->second) / (ln * DLen(pn->second));
+            if (dot > best) {
+                best = dot;
+                h.triPolygon[t] = p;
+            }
+        }
+    }
+    int untagged = static_cast<int>(std::count(h.triPolygon.begin(), h.triPolygon.end(), -1));
+    if (untagged)
+        Verbose("collision piece: %d of %d hull triangles match no source polygon", untagged, static_cast<int>(h.tris.size()));
+}
+
 }  // namespace
 
 void BuildCollisionModel(BuildContext& ctx) {
@@ -550,6 +690,9 @@ void BuildCollisionModel(BuildContext& ctx) {
         }
         std::vector<std::array<int, 3>> faces;
         for (auto& f : inst->faces) faces.push_back({f.v[0], f.v[1], f.v[2]});
+        PointPolygons polygons;
+        for (auto& f : inst->faces)
+            for (int c = 0; c < 3; c++) AddPolygonPoint(polygons, world[f.v[c]], f.polygon);
         Solid s;
         s.name = FileBase(qc.file);
         s.bone = 0;
@@ -579,6 +722,7 @@ void BuildCollisionModel(BuildContext& ctx) {
             if (!MakeHull(world, h)) Fatal("collision model %s is flat or degenerate", qc.file.c_str());
             s.pieces.push_back(h);
         }
+        for (auto& h : s.pieces) TagPolygons(h, polygons);
         solids.push_back(s);
     } else {
         // one solid per bone, vertices in bone space
@@ -619,6 +763,10 @@ void BuildCollisionModel(BuildContext& ctx) {
             Mat3x4 inv = Invert(bones[gb].boneToPose);
             std::vector<Vec3> pts;
             for (int v : verts) pts.push_back(Transform(inv, inst->gverts[v].pos));
+            PointPolygons polygons;
+            for (auto& f : inst->faces)
+                if (verts.count(f.v[0]) && verts.count(f.v[1]) && verts.count(f.v[2]))
+                    for (int c = 0; c < 3; c++) AddPolygonPoint(polygons, Transform(inv, inst->gverts[f.v[c]].pos), f.polygon);
             Solid s;
             s.name = bones[gb].name;
             s.bone = static_cast<int>(gb);
@@ -648,6 +796,7 @@ void BuildCollisionModel(BuildContext& ctx) {
                 }
                 s.pieces.push_back(h);
             }
+            for (auto& h : s.pieces) TagPolygons(h, polygons);
             // parent: nearest ancestor bone that has a solid (fixed up below)
             int p = bones[gb].parent;
             s.parent = p >= 0 ? bones[p].name : "";
@@ -851,7 +1000,8 @@ void BuildCollisionModel(BuildContext& ctx) {
         Buffer hdrs;
         std::vector<std::vector<uint8_t>> blobs;
         std::vector<std::array<int, 4>> counts;
-        bool ok = true;
+        bool ok = !qc.noMapCollision;
+        ctx.out.physics.noMapCollision = qc.noMapCollision;
         for (auto& s : solids)
             for (auto& h : s.pieces) {
                 int faces, bevels, edges;
