@@ -48,7 +48,7 @@ python tools\roundtrip.py --jobs 8 --compiler build\r2studiomdl.exe --out test-o
 To recompile existing, unedited exports with another build:
 
 ```powershell
-python tools\recheck_corpus.py --from-report test-output\release-corpus9\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
+python tools\recheck_corpus.py --from-report test-output\release-corpus10\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
 ```
 
 The recheck verifies input model size/timestamps and the exporter/comparison tool
