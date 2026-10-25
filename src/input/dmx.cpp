@@ -575,7 +575,6 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                         const Attr* mn = mat->Get("mtlName");
                         mtl = mn && !mn->strings.empty() ? mn->strings[0] : mat->name;
                     }
-                    mtl = FixSlashes(mtl, '/');
                     int matIndex = -1;
                     for (size_t m = 0; m < src->materials.size(); m++)
                         if (IEquals(src->materials[m], StripExtension(mtl))) matIndex = static_cast<int>(m);

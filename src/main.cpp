@@ -82,11 +82,11 @@ int main(int argc, char** argv) {
         if (!outFile.empty())
             out = std::filesystem::u8path(outFile);
         else if (!outDir.empty())
-            out = std::filesystem::u8path(outDir) / std::filesystem::u8path(model.name);
+            out = std::filesystem::u8path(outDir) / std::filesystem::u8path(FixSlashes(model.name));
         else if (!game.empty())
-            out = std::filesystem::u8path(game) / "models" / std::filesystem::u8path(model.name);
+            out = std::filesystem::u8path(game) / "models" / std::filesystem::u8path(FixSlashes(model.name));
         else
-            out = std::filesystem::u8path(def->qcDir) / std::filesystem::u8path(FileBase(model.name) + ".mdl");
+            out = std::filesystem::u8path(def->qcDir) / std::filesystem::u8path(FileBase(FixSlashes(model.name)) + ".mdl");
         std::error_code ec;
         if (out.has_parent_path()) std::filesystem::create_directories(out.parent_path(), ec);
         Info("---------------------");

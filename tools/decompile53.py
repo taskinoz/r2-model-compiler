@@ -290,17 +290,20 @@ def matrix_quaternion(m):
     return ((m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s)
 
 
-def write_dmx_mesh(path, bones, skeleton, polygons, material='phys', pieces=None, loose=()):
-    """A keyvalues2 DMX (model format 22) holding a skeleton and one mesh made of
-    polygons. skeleton: per bone (pos, RadianEuler rot), parent relative. polygons: lists
-    of (pos, normal, [(bone, weight)]) corners; each corner is weighted to one bone.
-    pieces: an id per polygon; corners at the same position within a piece share one
-    vertex, so each piece imports as a connected mesh (default: one piece).
-    loose: (pos, [(bone, weight)], piece) points no polygon uses, written as loose
-    vertices (retail collision pieces keep points such as cylinder-cap centres)."""
+def write_dmx(path, bones, skeleton, faces, loose=()):
+    """A keyvalues2 DMX (model format 22) holding a skeleton and one mesh of polygons.
+
+    skeleton: per bone (pos, RadianEuler rot), parent relative.
+    faces: (material, piece, corners); a corner is (pos, normal, [(bone, weight)], extra)
+    with optional extra keys 'uv', 'uv2' and 'color' (RGBA floats 0-1). Corners with the
+    same position and weights within a piece share one vertex, so each piece imports as
+    a connected mesh.
+    loose: (pos, [(bone, weight)], piece) points no face uses, written as loose vertices
+    (retail collision pieces keep points such as cylinder-cap centres)."""
     rng = random.Random(os.path.basename(path))  # stable element ids for identical exports
     ids = (uuid.UUID(int=rng.getrandbits(128)) for _ in iter(int, 1))
-    q = lambda s: '"%s"' % s
+    # keyvalues2 strings escape backslashes and quotes (material paths keep their slashes)
+    q = lambda s: '"%s"' % str(s).replace('\\', '\\\\').replace('"', '\\"')
     vec = lambda v: q(' '.join(fmt(x) for x in v))
 
     def transform(name, pos, quat):
@@ -319,57 +322,85 @@ def write_dmx_mesh(path, bones, skeleton, polygons, material='phys', pieces=None
                 '"children" "element_array"\n[\n%s\n]\n}' % (
                     q(joint_ids[i]), q(bones[i]['name']), transform(bones[i]['name'], pos, matrix_quaternion(angle_matrix(rot))), kids))
 
-    positions, weights, indices = [], [], []   # per shared vertex
-    normals, pos_index, faces = [], [], []      # per polygon corner (loop)
+    positions, weights = [], []                                  # per shared vertex
+    loop_pos, normals, uvs, uv2s, colors = [], [], [], [], []    # per polygon corner (loop)
     shared = {}
-    for k, poly in enumerate(polygons):
-        piece = pieces[k] if pieces else 0
-        for pos, nrm, wts in poly:
-            key = (piece, tuple(pos))
-            if key not in shared:
-                shared[key] = len(positions)
-                positions.append(pos)
-                weights.append(wts[0][1])
-                indices.append(wts[0][0])
-            faces.append(len(normals))
-            pos_index.append(shared[key])
-            normals.append(nrm)
-        faces.append(-1)
-    for pos, wts, piece in loose:
-        if (piece, tuple(pos)) not in shared:
-            shared[(piece, tuple(pos))] = len(positions)
+    material_faces = {}                                          # material -> loops, -1 ends a polygon
+
+    def vertex(piece, pos, wts):
+        key = (piece, tuple(pos), tuple(wts))
+        if key not in shared:
+            shared[key] = len(positions)
             positions.append(pos)
-            weights.append(wts[0][1])
-            indices.append(wts[0][0])
-    loops = [str(i) for i in range(len(normals))]
+            weights.append(wts)
+        return shared[key]
+    for material, piece, corners in faces:
+        out = material_faces.setdefault(material, [])
+        for pos, nrm, wts, extra in corners:
+            out.append(len(loop_pos))
+            loop_pos.append(vertex(piece, pos, wts))
+            normals.append(nrm)
+            uvs.append(extra.get('uv'))
+            uv2s.append(extra.get('uv2'))
+            colors.append(extra.get('color'))
+        out.append(-1)
+    for pos, wts, piece in loose:
+        vertex(piece, pos, wts)
+    joint_count = max([1] + [len(w) for w in weights])
+    blend_w, blend_i = [], []
+    for w in weights:
+        padded = list(w) + [(0, 0.0)] * (joint_count - len(w))
+        blend_w += [fmt(x[1]) for x in padded]
+        blend_i += [str(x[0]) for x in padded]
+    loops = [q(str(i)) for i in range(len(loop_pos))]
     arr = lambda kind, items: '"%s" [%s]' % (kind, ', '.join(items))
+    fmt_names = ['position$0', 'normal$0']
+    attrs = ['"position$0" %s\n"position$0Indices" %s' % (arr('vector3_array', [vec(p) for p in positions]),
+                                                        arr('int_array', [q(str(i)) for i in loop_pos])),
+             '"normal$0" %s\n"normal$0Indices" %s' % (arr('vector3_array', [vec(n) for n in normals]), arr('int_array', loops))]
+    for name, kind, values, default in (('texcoord$0', 'vector2_array', uvs, (0, 0)),
+                                        ('texcoord$1', 'vector2_array', uv2s, (0, 0)),
+                                        ('color$0', 'vector4_array', colors, (1, 1, 1, 1))):
+        if any(v is not None for v in values):
+            fmt_names.append(name)
+            filled = [v if v is not None else default for v in values]
+            attrs.append('"%s" %s\n"%sIndices" %s' % (name, arr(kind, [vec(v) for v in filled]), name, arr('int_array', loops)))
+    fmt_names += ['blendweights$0', 'blendindices$0']
     mesh_id, vd_id, dag_id, model_id = (str(next(ids)) for _ in range(4))
     vertex_data = ('"DmeVertexData"\n{\n"id" "elementid" %s\n"name" "string" "bind"\n'
-                   '"vertexFormat" "string_array" ["position$0", "normal$0", "blendweights$0", "blendindices$0"]\n'
-                   '"jointCount" "int" "1"\n'
-                   '"position$0" %s\n"position$0Indices" %s\n"normal$0" %s\n"normal$0Indices" %s\n'
-                   '"blendweights$0" %s\n"blendindices$0" %s\n}') % (
-        q(vd_id), arr('vector3_array', [vec(p) for p in positions]), arr('int_array', [q(str(i)) for i in pos_index]),
-        arr('vector3_array', [vec(n) for n in normals]), arr('int_array', [q(i) for i in loops]),
-        arr('float_array', [q(fmt(w)) for w in weights]), arr('int_array', [q(str(i)) for i in indices]))
+                   '"vertexFormat" "string_array" [%s]\n"flipVCoordinates" "bool" "1"\n"jointCount" "int" "%d"\n'
+                   '%s\n"blendweights$0" %s\n"blendindices$0" %s\n}') % (
+        q(vd_id), ', '.join(q(n) for n in fmt_names), joint_count, '\n'.join(attrs),
+        arr('float_array', [q(w) for w in blend_w]), arr('int_array', [q(i) for i in blend_i]))
     mesh_name = os.path.splitext(os.path.basename(path))[0]
+    face_sets = ',\n'.join(
+        '"DmeFaceSet"\n{\n"id" "elementid" %s\n"name" "string" %s\n"material" "DmeMaterial"\n{\n"id" "elementid" %s\n'
+        '"name" "string" %s\n"mtlName" "string" %s\n}\n"faces" %s\n}' % (
+            q(next(ids)), q(mat), q(next(ids)), q(mat), q(mat), arr('int_array', [q(str(i)) for i in idx]))
+        for mat, idx in material_faces.items())
     dag = ('"DmeDag"\n{\n"id" "elementid" %s\n"name" "string" %s\n"shape" "DmeMesh"\n{\n'
            '"id" "elementid" %s\n"name" "string" %s\n"currentState" "element" %s\n'
-           '"baseStates" "element_array" ["element" %s]\n"faceSets" "element_array"\n[\n"DmeFaceSet"\n{\n'
-           '"id" "elementid" %s\n"name" "string" %s\n"material" "DmeMaterial"\n{\n"id" "elementid" %s\n'
-           '"name" "string" %s\n"mtlName" "string" %s\n}\n"faces" %s\n}\n]\n}\n"transform" %s\n}') % (
-        q(dag_id), q(mesh_name), q(mesh_id), q(mesh_name), q(vd_id), q(vd_id), q(next(ids)), q(material), q(next(ids)), q(material), q(material),
-        arr('int_array', [q(str(i)) for i in faces]), transform('physics', (0, 0, 0), (0, 0, 0, 1)))
+           '"baseStates" "element_array" ["element" %s]\n"faceSets" "element_array"\n[\n%s\n]\n}\n"transform" %s\n}') % (
+        q(dag_id), q(mesh_name), q(mesh_id), q(mesh_name), q(vd_id), q(vd_id), face_sets,
+        transform(mesh_name, (0, 0, 0), (0, 0, 0, 1)))
     roots = ',\n'.join([joint(r) for r in children[-1]] + ['"element" %s' % q(dag_id)])
-    model = ('"DmeModel"\n{\n"id" "elementid" %s\n"name" "string" "physics"\n"children" "element_array"\n[\n%s\n]\n'
+    model = ('"DmeModel"\n{\n"id" "elementid" %s\n"name" "string" %s\n"children" "element_array"\n[\n%s\n]\n'
              '"jointList" "element_array"\n[\n%s\n]\n"transform" %s\n}') % (
-        q(model_id), roots, ',\n'.join('"element" %s' % q(j) for j in joint_ids),
-        transform('physics', (0, 0, 0), (0, 0, 0, 1)))
+        q(model_id), q(mesh_name), roots, ',\n'.join('"element" %s' % q(j) for j in joint_ids),
+        transform(mesh_name, (0, 0, 0), (0, 0, 0, 1)))
     with open(path, 'w', newline='\n') as f:
         f.write('<!-- dmx encoding keyvalues2 1 format model 22 -->\n')
-        f.write('"DmElement"\n{\n"id" "elementid" %s\n"name" "string" "physics"\n"skeleton" "element" %s\n'
-                '"model" "element" %s\n}\n\n' % (q(next(ids)), q(model_id), q(model_id)))
+        f.write('"DmElement"\n{\n"id" "elementid" %s\n"name" "string" %s\n"skeleton" "element" %s\n'
+                '"model" "element" %s\n}\n\n' % (q(next(ids)), q(mesh_name), q(model_id), q(model_id)))
         f.write(model + '\n\n' + dag + '\n\n' + vertex_data + '\n')
+
+
+def write_dmx_mesh(path, bones, skeleton, polygons, material='phys', pieces=None, loose=()):
+    """write_dmx for a collision mesh: polygons of (pos, normal, [(bone, weight)]) corners,
+    one material, and an optional piece id per polygon."""
+    write_dmx(path, bones, skeleton,
+              [(material, pieces[k] if pieces else 0, [(p, n, w, {}) for p, n, w in poly]) for k, poly in enumerate(polygons)],
+              loose)
 
 
 def collision_block_faces(d, h, bones):
@@ -784,6 +815,18 @@ def decompile(path, outdir):
         uv = struct.unpack_from('<2f', d, o + 40)
         return pos, nrm, uv, [(bn[k], w[k]) for k in range(nb)]
 
+    # vertex colours / second UVs (VVC), per VVD vertex; such models export DMX meshes
+    vvc = mdl53.u(mdl53.VVC_HDR, d, h['vvcOffset']) if h['vvcSize'] else None
+    has_uv2 = bool(vvc and h['flags'] & 0x2000000 and vvc['uv2DataStart'])
+
+    def vvc_extra(i):
+        o = h['vvcOffset']
+        extra = {'color': tuple(c / 255.0 for c in d[o + vvc['colorDataStart'] + 4 * i:o + vvc['colorDataStart'] + 4 * i + 4])}
+        if has_uv2:
+            u2 = struct.unpack_from('<2f', d, o + vvc['uv2DataStart'] + 8 * i)
+            extra['uv2'] = (u2[0], 1 - u2[1])
+        return extra
+
     qc = ['$modelname "%s"' % h['name']]
     if static:
         qc.append('$staticprop')
@@ -843,18 +886,25 @@ def decompile(path, outdir):
                             # studiomdl reverses winding on load; write (a, c, b)
                             for c in (0, 2, 1):
                                 vv = verts[idx[t + c]]
-                                pos, nrm, uv, w = vvd_vertex(vstart + mesh['vertexoffset'] + vv['origMeshVertID'])
+                                vi = vstart + mesh['vertexoffset'] + vv['origMeshVertID']
+                                pos, nrm, uv, w = vvd_vertex(vi)
                                 if static:
                                     pos = rotate(ROT_M90, pos)
                                     nrm = rotate(ROT_M90, nrm)
-                                tri.append((pos, nrm, uv, w))
+                                tri.append((pos, nrm, uv, w, vvc_extra(vi) if vvc else None))
                             tris.append((mat, tri))
                 smd_name = '%s_%s_lod%d.smd' % (base, md['name'].replace('/', '_').replace('\\', '_').replace('.', '_') or 'model%d' % mi, lod) \
                     if False else '%s_bp%d_m%d_lod%d.smd' % (base, bpi, mi, lod)
                 skel = [[(b['pos'], b['rot']) for b in bones]]
                 if static:
                     skel = [[((0, 0, 0), (0, 0, 0)) for b in bones]]
-                write_smd(os.path.join(outdir, smd_name), bones, skel, tris)
+                if vvc:
+                    # SMD has no vertex colours: write the mesh as DMX (V flipped, as for SMD)
+                    smd_name = smd_name[:-4] + '.dmx'
+                    write_dmx(os.path.join(outdir, smd_name), bones, skel[0],
+                              [(mat, 0, [(p, n, w, dict(e, uv=(uv[0], 1 - uv[1]))) for p, n, uv, w, e in tri]) for mat, tri in tris])
+                else:
+                    write_smd(os.path.join(outdir, smd_name), bones, skel, [(mat, [c[:4] for c in tri]) for mat, tri in tris])
                 names.append(smd_name)
                 if lod:
                     lod_models.setdefault(lod, []).append((names[0], smd_name))

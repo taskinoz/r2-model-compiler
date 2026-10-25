@@ -47,9 +47,10 @@ int QcModelDef::FindIKChain(const std::string& name) const {
     return -1;
 }
 int QcModelDef::TextureIndex(const std::string& rawName, bool add) {
+    // stored as written (retail keeps both slash styles), matched slash-insensitively
     std::string name = StripExtension(rawName);
     for (size_t i = 0; i < textures.size(); i++)
-        if (IEquals(textures[i], name)) return static_cast<int>(i);
+        if (IEquals(FixSlashes(textures[i]), FixSlashes(name))) return static_cast<int>(i);
     if (!add) return -1;
     textures.push_back(name);
     return static_cast<int>(textures.size() - 1);

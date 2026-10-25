@@ -380,7 +380,7 @@ void BuildContext::BuildSkins() {
         std::string n = t;
         for (auto& r : qc.renameMaterials)
             if (IEquals(n, StripExtension(r.first))) n = StripExtension(r.second);
-        out.textures.push_back(FixSlashes(n, '\\'));
+        out.textures.push_back(n);  // as written: retail keeps both slash styles
     }
     out.numSkinRef = static_cast<int>(out.textures.size());
     if (qc.cdMaterials.empty()) {
@@ -612,7 +612,7 @@ CompiledModel Build(QcModelDef& qc) {
     ctx.FinalizeBones();
 
     CompiledModel& out = ctx.out;
-    out.name = FixSlashes(qc.modelName);
+    out.name = qc.modelName;  // as written (retail names keep their slashes)
     if (!EndsWithI(out.name, ".mdl")) out.name += ".mdl";
     out.surfaceProp = qc.surfaceProp;
     out.contents = qc.contents;
