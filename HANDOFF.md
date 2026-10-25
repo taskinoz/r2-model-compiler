@@ -15,7 +15,7 @@ limitations.
 
 ## Verified
 
-- Both CTest groups pass, including thirteen Python regression tests.
+- Both CTest groups pass, including fourteen Python regression tests.
 - Fresh full decompile + compile of all 602 retail mp_common models with the release
   executable: no compile failures or exceptions, and 560/602 match the comparison
   (bones, meshes, sequence/animation flags, pose keys and weight lists, animation
@@ -59,8 +59,9 @@ parent flag propagation limited to "used by" bits. tools/ingame_test.py gained
 
 ## Remaining parity work
 
-`ikfixup` and UI panel meshes remain incomplete; axis-interpolation bones are compiled
-but unverified in game.
+UI panel meshes remain incomplete; axis-interpolation bones are compiled but unverified
+in game. `ikfixup` is compiled and covered by a regression test only (it is baked into
+animations, so retail data cannot confirm Respawn's exact behaviour).
 The retail yaw split between the frame-movement track and the root bone cannot be
 recovered from exported SMDs, and hull reconstruction differs by a face or vertex
 on 31 models. Titanfall 1 and Apex MDL files are not direct compiler inputs; R2 v53

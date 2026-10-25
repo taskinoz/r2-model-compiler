@@ -123,8 +123,10 @@ footstep, attachment, release and unlatch), including studiomdl's range inferenc
 for `.` values, per-frame target errors (footsteps follow the frame-movement track),
 their compressed streams, and automatic release rules for chains an animation moves
 without rules (`noautoik` turns that off). Footstep rules default to Respawn's
-`endheight -100`. `ikfixup` and IK locks on sequences are parsed; `ikfixup` is not
-compiled yet. `$weightlist` lists are honoured per animation, and a sequence's weights
+`endheight -100`. `ikfixup` (footstep/world rules) re-solves the leg so the foot stays
+on its contact position over the rule's range and bakes the result into the
+animation. studiomdl's weight curve divides integers and is effectively 0 or 1; the
+compiler uses the intended frame-based curve. `$weightlist` lists are honoured per animation, and a sequence's weights
 are the largest of its animations'.
 
 Root motion: an `$animation`/`$sequence` with `rm` stores the root bones' yaw and
@@ -132,5 +134,5 @@ translation as a Respawn frame-movement track, as retail models do; `LX`/`LY`/`L
 `LZR` motion extraction is stored the same way. Add `$legacymovement` to the QC to
 write Valve-style piecewise movement records instead.
 
-Limitations: `ikfixup` and UI panel meshes remain incomplete. Titanfall 1 and Apex model files are not direct compiler inputs;
+Limitations: UI panel meshes remain incomplete. Titanfall 1 and Apex model files are not direct compiler inputs;
 this tool consumes QC/SMD/DMX and targets Titanfall 2 v53 output.

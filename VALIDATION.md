@@ -5,11 +5,11 @@ animated models, including Respawn root motion (frame movement), bone scale
 animation, IK rules, sequence weight lists and procedural bones. It is not a claim of complete Valve/Respawn feature parity.
 
 Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
-SHA-256: `0b386047f1a20876d5e0996cb46892bdeb683dc849a22639b95db5255362d5c1`.
+SHA-256: `1bdc9fe1c574cccdbe875a0bce0146b615051998ccc10ca954bd266bdb349f32`.
 
 ## Automated checks
 
-- Both CTest groups pass: the C++ collision hull suite and thirteen Python compiler/
+- Both CTest groups pass: the C++ collision hull suite and fourteen Python compiler/
   corpus-runner regression tests (including bone scale, IK rules and procedural bones).
 - Blender Source Tools exports from the same scene compile as SMD and binary DMX
   2, 3, 4, 5 and 9. All six outputs match in the compared fields, including two
@@ -19,7 +19,8 @@ SHA-256: `0b386047f1a20876d5e0996cb46892bdeb683dc849a22639b95db5255362d5c1`.
 - A command-line test reproduces Crowbar's working directory, QC basename and
   studiomdl arguments, including a game path containing spaces. Crowbar's GUI
   itself has not been driven.
-- The exact release executable above was run against the full corpus.
+- The full corpus was run with the previous build; see "Retail corpus" for how the
+  current executable differs from it.
 
 ## Retail corpus
 
@@ -29,7 +30,9 @@ compile failure or decompiler exception. **560/602** match every compared field.
 Reports:
 
 - `test-output/release-corpus9/results.json` and `release-corpus9.log`: full run
-  (fresh decompile and compile) with the release executable above.
+  (fresh decompile and compile) with the previous build (SHA-256 `0b386047...`); the
+  executable above only adds `ikfixup`, which retail models do not use, and matched
+  on a five-model spot run (`test-output/fixup-spot`).
 - `test-output/corpus-heading` and `test-output/corpus-euler`: A/B runs of the two
   frame-movement yaw definitions (heading kept: 7 vs 9 animation differences).
 
@@ -155,6 +158,8 @@ Structured reports and screenshots are under `test-output/`:
   `$proceduralbones` (.vrd quaternion-interpolation and aim-at bones, .txt axis
   interpolation). Only "used by" flags propagate to parent bones, so a jiggle bone's
   ancestors keep their animation.
+- `ikfixup`: studiomdl's two-bone solve (Studio_SolveIK) re-poses the leg so the foot
+  holds its contact position, using the intended frame-based weight curve.
 - Retail bone fields: zero qAlignment and 1/2048 scalescale.
 - Map-collision block for jointed models (bone references), bevels only where
   dot(n0, n1) < 0.26, at most 63 faces per piece, and retail bone references
@@ -162,7 +167,9 @@ Structured reports and screenshots are under `test-output/`:
 
 ## Remaining feature limits
 
-`ikfixup` and UI panel meshes remain incomplete.
+UI panel meshes remain incomplete. `ikfixup` is compiled (footstep/world rules); it
+bakes into animation data, so retail models cannot show its effect and it is verified
+by a regression test (planted foot held within 0.1 units, bone lengths preserved).
 Root motion is written as Respawn frame-movement tracks (`$legacymovement` selects
 Valve movement records).
 Ragdoll joint limits have not been measured exhaustively. Titanfall 1 and Apex

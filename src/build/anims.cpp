@@ -108,6 +108,55 @@ double FitScale(const std::vector<double>& fitVals, double maxAbs, double floor)
     return best;
 }
 
+// --- two-bone IK (Valve bone_setup Studio_SolveIK / CIKSolver), used by ikfixup
+
+void AlignIKMatrix(Mat3x4& m, const Vec3& alignTo) {
+    // column 0 becomes the vector, column 1 = column 2 x column 0, column 2 = 0 x 1
+    Vec3 x = Normalize(alignTo);
+    Vec3 z = m.Column(2);
+    Vec3 y = Normalize(Cross(z, x));
+    z = Cross(x, y);
+    for (int r = 0; r < 3; r++) {
+        m.m[r][0] = x[r];
+        m.m[r][1] = y[r];
+        m.m[r][2] = z[r];
+    }
+}
+
+// Places the knee for a two-segment chain (lengths a, b) reaching p, bending towards d.
+bool SolveTwoBone(float a, float b, const Vec3& p, const Vec3& d, Vec3& knee) {
+    Vec3 x = Normalize(p);
+    Vec3 y = Normalize(d - x * Dot(d, x));
+    float r = Length(p);
+    if (r < 1e-6f) return false;
+    float dd = (r + (a * a - b * b) / r) / 2;
+    float e = std::sqrt(std::max(0.f, a * a - dd * dd));
+    knee = x * dd + y * e;
+    return dd > r - b && dd < a;
+}
+
+bool SolveIK(int thigh, int kneeBone, int foot, const Vec3& target, std::vector<Mat3x4>& world) {
+    constexpr float kKneeMax = 0.9998f;  // about 1 degree short of straight
+    Vec3 wThigh = world[thigh].Origin(), wKnee = world[kneeBone].Origin(), wFoot = world[foot].Origin();
+    float l1 = Length(wKnee - wThigh), l2 = Length(wFoot - wKnee), l3 = Length(wFoot - wThigh);
+    if (l3 > (l1 + l2) * kKneeMax || l3 < 1e-6f) return false;  // too straight to find the knee
+    Vec3 kneeDir = Normalize((wKnee - wThigh) - (wFoot - wThigh) * (l1 / l3));
+    Vec3 ikFoot = target - wThigh, ikKnee = wKnee - wThigh;
+    // exaggerate knee targets for legs that are nearly straight
+    float dist = std::max(l1 + l2, Length(target - wThigh) - std::min(l1, l2)) * 100;
+    Vec3 targetKnee = ikKnee + kneeDir * dist;
+    if (Length(ikFoot) > (l1 + l2) * kKneeMax) ikFoot = Normalize(ikFoot) * ((l1 + l2) * kKneeMax);
+    float minDist = std::max(std::fabs(l1 - l2) * 1.15f, std::min(l1, l2) * 0.15f);
+    if (Length(ikFoot) < minDist) ikFoot = Normalize(wFoot - wThigh) * minDist;
+    Vec3 kneePos;
+    if (!SolveTwoBone(l1, l2, ikFoot, targetKnee, kneePos)) return false;
+    AlignIKMatrix(world[thigh], kneePos);
+    AlignIKMatrix(world[kneeBone], ikFoot - kneePos);
+    world[kneeBone].SetOrigin(wThigh + kneePos);
+    world[foot].SetOrigin(wThigh + ikFoot);
+    return true;
+}
+
 // Frame movement scales (retail floors: 128 units, 180 degrees).
 Vec4 FrameMovementScales(const std::vector<Vec4>& fm) {
     Vec4 out;
@@ -605,9 +654,62 @@ void BuildContext::BuildAnimations() {
             }
             case QcAnimCmd::IKRULE:
                 break;  // compiled by ProcessIKRules once the poses are final
-            case QcAnimCmd::IKFIXUP:
-                Warn("%s: ikfixup is not compiled yet; ignored", a.name.c_str());
+            case QcAnimCmd::IKFIXUP: {
+                // studiomdl fixupIKErrors: re-solve the leg so the foot stays on its contact
+                // position, blended in and out over the rule's range, and bake the result
+                if (!cmd.ikrule) break;
+                const QcIKRule& q = *cmd.ikrule;
+                if (q.type != IK_GROUND && q.type != IK_WORLD) {
+                    Warn("%s: ikfixup only handles footstep rules (as studiomdl); ignored", a.name.c_str());
+                    break;
+                }
+                int c = qc.FindIKChain(q.chain);
+                if (c < 0) Fatal("%s: unknown chain \"%s\" in ikfixup", a.name.c_str(), q.chain.c_str());
+                int foot = FindBone(qc.ikChains[c].bone);
+                int knee = foot >= 0 ? bones[foot].parent : -1;
+                int thigh = knee >= 0 ? bones[knee].parent : -1;
+                if (thigh < 0) Fatal("%s: ikchain \"%s\" is too short for ikfixup", a.name.c_str(), q.chain.c_str());
+                const int nf = a.numFrames;
+                auto frame = [](int v) { return v < 0 ? 0 : v; };  // unset range values are 0 in studiomdl
+                int start = frame(q.start), peak = frame(q.peak), tail = frame(q.tail), end = frame(q.end);
+                if (start == 0 && peak == 0 && tail == 0 && end == 0) tail = end = nf - 1;
+                if (peak < start) peak += nf - 1;
+                if (tail < peak) tail += nf - 1;
+                if (end < tail) end += nf - 1;
+                int contact = q.contact == -1 ? peak : q.contact;
+                int numError = end - start + 1;
+                if (end >= nf) numError += 2;
+                // Rule weight by frame. studiomdl intends this (IKRuleWeight), but its integer
+                // division turns the cycle into 0 or 1; the frame form is the intended curve.
+                auto weight = [&](int t) -> float {
+                    if (end > nf - 1 && t < start) t += nf - 1;
+                    float v;
+                    if (t < start) return 0;
+                    if (t < peak) v = static_cast<float>(t - start) / std::max(1, peak - start);
+                    else if (t < tail) return 1;
+                    else if (t < end) v = 1 - static_cast<float>(t - tail) / std::max(1, end - tail);
+                    else return 0;
+                    return 3 * v * v - 2 * v * v * v;
+                };
+                std::vector<Mat3x4> world;
+                CalcBoneTransforms(a, std::clamp(contact % std::max(1, nf), 0, nf - 1), world);
+                const Vec3 footfall = world[foot].Origin();
+                for (int k = 0; k < numError; k++) {
+                    int t = start + k, fr = t % nf;
+                    float s = weight(t);
+                    if (s <= 0) continue;
+                    CalcBoneTransforms(a, fr, world);
+                    Vec3 target = footfall * s + world[foot].Origin() * (1 - s);
+                    if (!SolveIK(thigh, knee, foot, target, world)) continue;
+                    for (int b : {thigh, knee, foot}) {
+                        int p = bones[b].parent;
+                        Mat3x4 local = p < 0 ? world[b] : Concat(Invert(world[p]), world[b]);
+                        sanim[fr][b].rot = MatrixAngles(local);
+                        sanim[fr][b].pos = local.Origin();
+                    }
+                }
                 break;
+            }
             default:
                 Warn("%s: animation command %d is not supported yet; ignored", a.name.c_str(), static_cast<int>(cmd.type));
                 break;

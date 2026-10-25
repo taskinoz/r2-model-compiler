@@ -145,6 +145,33 @@ class CompilerRegressions(unittest.TestCase):
                               .replace('"anim_', '"decompiled/anim_'), 'second')
         self.assertEqual(roundtrip.compare(roundtrip.summary(first), roundtrip.summary(second)), [])
 
+    def test_ikfixup_locks_the_foot(self):
+        bones = [{'name':'root','parent':-1}, {'name':'hip','parent':0},
+                 {'name':'knee','parent':1}, {'name':'foot','parent':2}]
+        bind = [((0,0,0),(0,0,0)), ((0,0,30),(0,0,0)), ((5,0,-15),(0,0,0)), ((-5,0,-15),(0,0,0))]
+        dc.write_smd(self.work / 'body.smd', bones, [bind], cube((0,0,0),(0,0,1),3))
+        # the hip slides forward, dragging the planted foot with it
+        frames = [[bind[0], ((i, 0, 30), (0,0,0)), bind[2], bind[3]] for i in range(9)]
+        dc.write_smd(self.work / 'slide.smd', bones, frames)
+        qc = ('$modelname "test.mdl"\n$body body "body.smd"\n$ikchain "leg" "foot" knee 1 0 0\n'
+              '$sequence slide "slide.smd" fps 30 %s\n')
+        def legs(output):
+            data = output.read_bytes()
+            model = mdl53.Model(data)
+            _, _, poses = dc.decode_anim(data, model, model.bones(), 0)
+            return [roundtrip.world_positions(model.bones(), p) for p in poses]
+        plain_legs = legs(self.compile(qc % '', 'plain'))
+        fixed_legs = legs(self.compile(qc % 'ikfixup "leg" footstep range 0 2 6 8 contact 4', 'fixed'))
+        plain, fixed = [w[3] for w in plain_legs], [w[3] for w in fixed_legs]
+        for w in fixed_legs:                                    # the solve bends the knee, not the bones
+            self.assertAlmostEqual(math.dist(w[1], w[2]), math.dist(plain_legs[0][1], plain_legs[0][2]), places=2)
+            self.assertAlmostEqual(math.dist(w[2], w[3]), math.dist(plain_legs[0][2], plain_legs[0][3]), places=2)
+        self.assertGreater(math.dist(plain[2], plain[6]), 3)    # without the fixup the foot slides
+        for f in range(2, 7):                                   # with it the foot stays planted
+            self.assertLess(math.dist(fixed[f], plain[4]), 0.1)
+        self.assertLess(math.dist(fixed[0], plain[0]), 0.1)     # outside the range nothing changes
+        self.assertLess(math.dist(fixed[8], plain[8]), 0.1)
+
     def write_procedural_model(self, folder, procedural=True):
         """Driver bone turns 90 degrees; follower (quatinterp), aimer (aim at target) and
         axisbone (axisinterp) react. Attachments expose the results."""
