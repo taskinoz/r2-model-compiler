@@ -396,6 +396,8 @@ struct QcModelDef {
     bool autoCenter = false;
     Vec3 eyePosition;
     std::vector<std::string> sourceFiles;  // $sourcefile (r2c extension): the stored source-file list
+    std::vector<std::string> nodes;  // $node (r2c extension): node names in table order
+    int localNodeUnk = 0;            // $localnodeunk (r2c extension): header field 0x108
     float headerMass = -1;  // top-level $mass (r2c extension): header mass of a model without physics
     bool illumSet = false;
     Vec3 illumPosition;

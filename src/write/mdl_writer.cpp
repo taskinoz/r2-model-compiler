@@ -444,6 +444,7 @@ void MdlWriter::WriteNodes() {
     for (size_t i = 0; i < m_.nodeNames.size(); i++) Str(names + i * 4, 0, m_.nodeNames[i]);
     HdrHere(H_LOCALNODEINDEX);
     Hdr(H_NUMLOCALNODES, static_cast<int>(m_.nodeNames.size()));
+    Hdr(H_LOCALNODEUNK, m_.localNodeUnk);
     b_.Append(m_.transitions);
     b_.Align(4);
 }

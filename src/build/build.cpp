@@ -284,6 +284,7 @@ void BuildContext::BuildSequences() {
         nodes.push_back(n);
         return static_cast<int>(nodes.size());
     };
+    for (auto& n : qc.nodes) node(n);  // declared nodes first, in their order
     auto animIndex = [&](const std::string& n) -> int {
         for (size_t i = 0; i < anims.size(); i++)
             if (IEquals(anims[i].name, n)) return static_cast<int>(i);
@@ -415,6 +416,7 @@ void BuildContext::BuildSequences() {
     }
     // autolayer sequence indices refer to the QC order; remap if declared-only sequences were skipped
     out.nodeNames = nodes;
+    out.localNodeUnk = qc.localNodeUnk;
     size_t nn = nodes.size();
     out.transitions.assign(nn * nn, 0);
     for (auto& s : out.sequences) {

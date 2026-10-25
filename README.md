@@ -240,7 +240,14 @@ decompiler writes them when a model needs them.
 - `$ikchain ... links "a" "b" "c"`: the chain's three links when they are not the plain
   parent chain (retail skips twist bones); `unk <value>` sets the chain's unknown float
   (default 0.707).
-- Sequence options: `unk_c4 <n>`, and `blendlayer` options `realtime` and `flags <n>`.
+- Sequence options: `unk_c4 <n>`, `bbox <min x y z> <max x y z>` (the stored box
+  instead of a computed one), and `blendlayer` options `realtime` and `flags <n>`.
+  Decompiled sequences carry retail's boxes, because some retail boxes do not match
+  their animation; delete the `bbox` line after editing an animation so the box is
+  recomputed.
+- DMX `r2c_vertex_id` (int per corner): corners with different ids never become one
+  vertex. Decompiled meshes carry retail's vertex numbers this way, so vertices retail
+  kept apart stay apart even when identical in every attribute.
 - `$keyvalues` may appear more than once; each block is stored as its own
   `mdlkeyvalue` text, as retail does.
 

@@ -1177,6 +1177,16 @@ def decompile(path, outdir):
     # sequences
     node_names = [mdl53.cstr(d, struct.unpack_from('<i', d, h['localnodenameindex'] + 4 * i)[0])
                   for i in range(h['numlocalnodes'])]
+    # every node in table order (r2c extension), including any no sequence uses
+    for nm in node_names:
+        qc.append('$node "%s"' % nm)
+    if h['localNodeUnk']:
+        qc.append('$localnodeunk %d' % h['localNodeUnk'])
+    # an explicit hull ($bbox) when it is not sequence 0's box
+    if h['numlocalseq']:
+        s0 = mdl53.u(mdl53.SEQDESC_FIELDS, d, h['localseqindex'])
+        if list(s0['bbmin']) + list(s0['bbmax']) != list(h['hull_min']) + list(h['hull_max']):
+            qc.append('$bbox %s' % ' '.join('%.9g' % v for v in list(h['hull_min']) + list(h['hull_max'])))
     for si in range(h['numlocalseq']):
         o = h['localseqindex'] + si * 0xE8
         s = mdl53.u(mdl53.SEQDESC_FIELDS, d, o)

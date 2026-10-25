@@ -74,6 +74,11 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
 - Vertex identity: retail keeps vertices that match in position, normal, UV and
   weights apart when their tangents differ (about 52,000 such pairs in LOD 0 alone).
   The split comes from the source mesh, so it cannot be rebuilt from geometry alone.
+- 49 `mp_common` models (2,112 vertices) have mesh vertices no triangle of any LOD
+  uses, leftovers of the source mesh. They still count in the vertex totals and in the
+  bones' vertex-LOD flags. The decompiler does not keep them.
+- Sequence boxes are not always what the animation gives: some retail reload
+  sequences are offset about 110 units along x, from offset source animations.
 - Mesh order within a model follows the source's material order, not texture index.
   With skin families, the texture table lists each base texture followed by its
   replacements (169/169 multi-skin models).

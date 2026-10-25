@@ -1689,6 +1689,8 @@ void Parser::Register() {
         m_.jointContents.push_back({j, c});
     };
     h["$mass"] = [&] { m_.headerMass = F("mass"); };
+    h["$node"] = [&] { m_.nodes.push_back(S("node name")); };
+    h["$localnodeunk"] = [&] { m_.localNodeUnk = I("value"); };
     h["$sourcefile"] = [&] { m_.sourceFiles.push_back(S("source file")); };
     h["$illumposition"] = [&] {
         // studiomdl rotates these by its built-in 90 degrees

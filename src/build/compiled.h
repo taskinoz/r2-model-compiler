@@ -295,6 +295,7 @@ struct CompiledModel {
     std::vector<float> lodSwitch;  // per LOD
     std::vector<std::vector<std::pair<int, std::string>>> lodMaterialReplacements;  // [lod] -> (texture, name)
     std::vector<std::string> nodeNames;
+    int localNodeUnk = 0;
     std::vector<uint8_t> transitions;  // numnodes * numnodes
     std::vector<CIKChain> ikChains;
     std::vector<CUIPanel> uiPanels;
