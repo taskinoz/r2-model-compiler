@@ -1,0 +1,13 @@
+[project]
+name = "r2-model-compiler-tools"
+version = "0.2.0"
+description = "Decompiler, round-trip comparison and in-game test tools for r2studiomdl (Titanfall 2 MDL v53)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+# The tools and tests use only the Python standard library.
+dependencies = []
+
+[tool.uv]
+# A set of scripts (tools/, tests/), not an installable package.
+package = false

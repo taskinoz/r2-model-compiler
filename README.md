@@ -195,8 +195,26 @@ Push-Location build; ctest --output-on-failure; Pop-Location
 ```
 
 The CTest suite runs the C++ convex-hull tests and, when Python 3 is available, the
-Python compiler regression tests (`python -m unittest discover -s tests -p "test_*.py"`).
-`.\tools\package.ps1` builds the release ZIP.
+Python compiler regression tests. `.\tools\package.ps1` builds the release ZIP.
+
+### Python tools and tests
+
+The decompiler, comparison and in-game tools in `tools/` and the tests in `tests/` need
+Python 3.10 or newer and only its standard library. They run with any Python 3
+installation, or with [uv](https://docs.astral.sh/uv/), which picks or downloads a
+suitable Python and creates a local `.venv` from `pyproject.toml`:
+
+```powershell
+# with uv
+uv run python -m unittest discover -s tests -p "test_*.py"
+uv run tools\roundtrip.py --help
+
+# with a plain Python installation
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+The tests use `build\r2studiomdl.exe`; set `R2C_COMPILER` to test another executable.
+The examples below use `python`; `uv run` works the same way in front of any of them.
 
 ## Testing against the game
 

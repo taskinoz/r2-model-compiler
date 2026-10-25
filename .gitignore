@@ -13,3 +13,4 @@ __pycache__/
 /tests/blender/out/
 /tests/dmx/out/
 /dist/
+.venv/

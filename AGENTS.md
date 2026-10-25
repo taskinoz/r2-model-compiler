@@ -29,11 +29,15 @@ pitfalls found while building it. Read `README.md` for user-facing behaviour,
 .\build-dev.bat                  # a second copy in build-dev\, e.g. for A/B runs
 Push-Location build; ctest --output-on-failure; Pop-Location
 python -m unittest discover -s tests -p "test_*.py"
+uv run python -m unittest discover -s tests -p "test_*.py"   # same, through uv
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) runs the same build and CTest on
-Windows for every push to `main` and every pull request, and keeps the executable
-as an artifact. Set `R2C_COMPILER` to test another executable. Add a regression test in
+The Python side needs 3.10+ and the standard library only (tested on 3.10 and 3.14).
+`pyproject.toml` / `uv.lock` let `uv run` work on any script in `tools/`. Keep it
+dependency-free; analysis-only packages (capstone, pefile, Pillow) are not
+dependencies. GitHub Actions (`.github/workflows/ci.yml`) runs the same build, CTest
+and the uv test route on Windows for every push to `main` and every pull request, and
+keeps the executable as an artifact. Set `R2C_COMPILER` to test another executable. Add a regression test in
 `tests/test_compiler.py` for every feature. The existing tests show the pattern:
 - write a small SMD/QC with `dc.write_smd`;
 - compile it;

@@ -36,6 +36,18 @@ jobs:
           ctest --output-on-failure
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
+      # The documented uv route: resolves pyproject.toml and runs the same tests in
+      # uv's own environment.
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Test with uv
+        shell: pwsh
+        env:
+          R2C_COMPILER: build/r2studiomdl.exe
+        run: |
+          uv run --locked python -m unittest discover -s tests -p "test_*.py"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
