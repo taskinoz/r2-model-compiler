@@ -64,6 +64,11 @@ keeps the executable as an artifact. Set `R2C_COMPILER` to test another executab
     continues a run;
   - a full corpus run takes about 15 GB under `test-output/`, so delete the work
     folders of old runs.
+- `tools/structdiff.py`: field-by-field comparison of every rebuilt model in a
+  `roundtrip.py` report against retail (`--report results.json --out diff.json`). It
+  prints each differing field path with its model count and examples. Use it to find
+  retail rules the summary comparison does not cover, then confirm a rule over the
+  whole corpus before relying on it.
 - `tools/recheck_corpus.py`: recompiles cached exports from a previous run with a new
   executable. It checks the input stamps and tool hashes first.
 - `tools/phy.py`: PHY / IVP compact-surface reader.

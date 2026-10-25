@@ -1,4 +1,4 @@
-# Tested Windows build — 25 October 2026
+# Tested Windows build — 26 October 2026
 
 This build is usable for Titanfall 2 static props, moving physics props and skinned,
 animated models, including Respawn root motion (frame movement), bone scale
@@ -6,10 +6,11 @@ animation, IK rules, sequence weight lists, procedural bones, bone followers and
 panel meshes. It is not a claim of complete Valve/Respawn feature parity.
 
 Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime),
-released as v0.4.0. SHA-256:
-`e94ee0a3faf39b822f8a4305a0a9bd5dfb451767bb8a2d6173442c48a25de9b7`.
-(v0.3.0 shipped `a6370348...`, v0.2.0 `67fb263a...` and v0.1.0 `90c58cc2...`; the
-changes since v0.2.0 are under "Collision faces from source polygons".)
+built from commit 0cc71f0 (not yet released). SHA-256:
+`158f40dfde02193e15d853e4472a791ad86dc8eedcb2a5a32705a4f66f8f2154`.
+(v0.4.0 shipped `e94ee0a3...`, v0.3.0 `a6370348...`, v0.2.0 `67fb263a...` and v0.1.0
+`90c58cc2...`. The changes since v0.4.0 are under "Field-level comparison"; those since
+v0.2.0 are under "Collision faces from source polygons".)
 
 Paths under `test-output/` name the local report folders the tools produced (JSON
 results, logs and screenshots). They are not part of the repository; the commands
@@ -17,11 +18,11 @@ below regenerate them from your own copy of the game.
 
 ## Automated checks
 
-- Both CTest groups pass: the C++ collision hull suite and twenty-one Python compiler/
+- Both CTest groups pass: the C++ collision hull suite and twenty-three Python compiler/
   corpus-runner regression tests (including bone scale, IK rules, procedural bones,
   UI panels, bone followers with per-joint concave collision, DMX UV2/vertex
   colour, IK ranges that studiomdl overwrote in order, DMX polygons as map-collision
-  faces, and `$nomapcollision`).
+  faces, `$nomapcollision`, DMX tangents and the retail-value QC extensions).
 - Blender Source Tools exports from the same scene compile as SMD and binary DMX
   2, 3, 4, 5 and 9. All six outputs match in the compared fields, including two
   physics solids with total volume 24,576 cubic inches.
@@ -39,9 +40,10 @@ compile failure or decompiler exception. **591/602** match every compared field.
 
 Reports:
 
-- `test-output/release-corpus17/results.json` and `release-corpus17.log`: full run
-  (fresh decompile and compile) with the executable above. No collision differences
-  remain; v0.2.0 matched 559/602 and v0.3.0 587/602.
+- `test-output/mp-final2/results.json` and `mp-final2.log`: full run (fresh decompile
+  and compile) with the executable above, and `structdiff-mp-final2.json` for its
+  field-level comparison. No collision differences remain; v0.2.0 matched 559/602,
+  v0.3.0 587/602 and v0.4.0 591/602.
 - `test-output/ui-corpus2`: all 35 retail models with UI panels (163 panels), fresh
   decompile and compile with the executable above: 35/35 match, and every panel block
   (header hash, bones, vertices, faces, winding and bounds) is byte-identical to retail.
@@ -101,8 +103,8 @@ re-quantization: errors are recomputed from the decoded poses. None is claimed l
 The 13 single-player map VPKs (`englishclient_sp_*.bsp.pak000_dir.vpk`) hold 11,709
 models. 4,997 are byte-identical to `mp_common` models; the other **3,422** unique v53
 models were decompiled and compiled with the executable above. There were no compile
-failures or decompiler exceptions, and **3,411/3,422** match every compared field
-(`test-output/sp-corpus8`; v0.2.0 matched 3,223 and v0.3.0 3,384). No single-player model uses flexes,
+failures or decompiler exceptions, and **3,416/3,422** match every compared field
+(`test-output/sp-final2`; v0.2.0 matched 3,223, v0.3.0 3,384 and v0.4.0 3,411). No single-player model uses flexes,
 eyeballs or vertex animation, and none sets the UV2 flag.
 
 This corpus found problems the multiplayer set does not exercise. They are fixed in
@@ -127,16 +129,56 @@ this build:
   a rewritten start from a rewritten end. This took `titan_buddy_sp_core` from 59.17
   to an ordinary 0.72 residual.
 
-The 11 remaining differences:
+The 6 remaining differences (the three trinity models and the two giantfan panels
+now match, through `$staticcollisioncount` and mesh-only vertices):
 
 | Models | Difference |
 | --- | --- |
-| `trinity`, `trinity_small`, `trinity_xsmall` | Retail has no map-collision block but stores a count of -1 and bone references of 0xFFFF; `$nomapcollision` reproduces the missing block, not those values |
 | `titan_buddy_mp_core` | One attachment rule's error stream carries a constant rotation offset of about 60 degrees in every frame, while the rule's own orientation matches; the sibling animation matches. Treated as stale retail data |
 | `titan_buddy_sp_core`, `titan_buddy_scripted_s2s` | IK footstep error samples off by 0.72 and 0.27 (re-quantization over animations of up to 600 frames) |
 | `birmingham_fleetscale`, `vehicle_draconis_hero_animated` | Sampled world positions off by 1.24 and 0.58 inches (large, distant animated ships) |
-| `beacon_giantfan_panel_01`, `_03` | Retail lists `debug/debugempty` for a mesh with two vertices and no triangles, which an SMD cannot express |
 | `titan_buddy_embark` | Retail sets HAS_SCALE (0x20000) on all 54 animations although only one scales; in the 14 other models with scaled animations the flag marks exactly those |
+
+## Field-level comparison (structdiff)
+
+`tools/structdiff.py` dumps every v53 structure (header, bones, sequences,
+animations, body parts, meshes, VTX strips, VVD/VVC headers and fixups, hitboxes,
+attachments, IK, textures, skins, keyvalues, per-triangle header) into flat field
+paths. It compares the rebuilt copy of each model against retail, leaving out offsets,
+sizes and checksums. It goes well beyond the summary comparison above.
+
+```powershell
+python -I tools\structdiff.py --report test-output\mp-final2\results.json --out test-output\structdiff-mp-final2.json
+```
+
+At v0.4.0, 97 field paths differed in `mp_common`. With this build, 17 differ in
+`mp_common` and 22 in the single-player corpus. The rules found and fixed on the way
+are listed in `docs/mdl-v53-format.md`:
+- vertex identity by tangent, and retail vertex numbering kept;
+- fixup tables and their LOD counts;
+- sequence-box rules, and retail boxes kept;
+- bone and header flags;
+- unaligned bone quaternions;
+- material, mesh, solid and node order;
+- names kept as written;
+- the per-triangle tree on `allowstatic` props;
+- mesh vertices without triangles;
+- the string-table opening;
+- bounds initialisation quirks.
+
+What still differs, and why:
+
+| Field | Models (MP / SP) | Reason |
+| --- | --- | --- |
+| Per-triangle tree node/leaf/vertex counts, box | 92 / 1,549 | Retail splits small nodes by a rule not reproduced (leaves of 0-12 triangles), and builds its vertex list from source data the file does not keep. The tree is a collision acceleration structure; it is rebuilt valid, not identical |
+| Body-part model names | 124 / 43 | Retail source paths that are absolute, start with `/` or `..`, lack an extension or repeat within a model. The decompiler writes generated names for these |
+| Bone vertex-LOD flags | 13 / 32 | Bones retail flags without any stored vertex using them (group bones such as `grp_l_leg_lod0`), probably from zero-weight source weights the VVD drops |
+| `anims[*].nummovements` | 2 / 0 | A legacy Valve movement record on two animations that otherwise use no motion flags |
+| Bone rotation sign | 1 / 0 | `dropship_common`: one bone's roll is +π in retail and −π after the round trip (the same rotation) |
+| `ptpov_test` texture / model type | 1 / 0 | A retail test model whose structures overlap other data |
+| Header flags | 0 / 3 | One multi-bone model with 0x800000 (`wf_platform_4`) and two single-bone models, still to be explained |
+| Generated hitbox bounds | 0 / 3 | Generated-hitbox vertex sets differ by vertices outside LOD 0, like the per-triangle vertex list |
+| Bone scale and animation flags | 0 / 1 | `titan_buddy_embark`: see the table above |
 
 ## Collision faces from source polygons
 

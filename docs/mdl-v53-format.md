@@ -39,6 +39,12 @@ independent reader used for surveys and comparisons.
   bounds are not put through the AABB step. Rigid collision then expands sequence 0
   by its points in bind pose plus 0.25. The hull is sequence 0's box.
 - Some attachments store an all-zero matrix.
+- Generated hitboxes (`$autohitboxes`) always contain their bone's origin.
+- The per-triangle header box starts its maximum at FLT_MIN (1.18e-38), so a model
+  lying entirely on the negative side of an axis stores FLT_MIN as that maximum.
+- A rigid model without a map-collision block stores a static collision count of 0
+  (bone 0 points at entry 0) or -1 (bone 0 points at 0xFFFF); the trinity models use
+  -1.
 
 ## Bone followers
 
