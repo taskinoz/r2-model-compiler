@@ -325,10 +325,32 @@ def ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta):
     # rule's end after that rule was processed (so it can end up before its tail,
     # unwrapped). Recover the original end from the error stream length and write the
     # next rule's start as "." so the compiler repeats it.
+    # An overwrite can also leave the range in order; then only the error stream, sized
+    # from the original range, shows it. A footstep's error is zero in x/y at its contact
+    # frame, which tells an overwritten start (stream begins earlier) from an
+    # overwritten end (stream runs longer).
+    def planted(r, index):
+        pos = decode_ik_error(d, r, r['iStart'] + index)[0]
+        return abs(pos[0]) < 0.05 and abs(pos[1]) < 0.05
+    in_order_overwrite, start_overwrite = set(), set()
+    for i, r in enumerate(rules):
+        st, pk, tl, en = frames[i]
+        if not (nf > 1 and r['compressedikerrorindex'] and st <= pk <= tl <= en and r['iStart'] == st):
+            continue
+        n = ik_error_frames(d, r)
+        if n == en - st + 1 + (2 if en >= nf else 0):
+            continue
+        in_order_overwrite.add(i)
+        contact = int(round(r['contact'] * (nf - 1)))
+        s0 = en - n + (3 if en >= nf else 1)
+        if r['type'] == 3 and 0 <= contact - s0 < n and planted(r, contact - s0) and not (
+                contact - st < n and planted(r, contact - st)):
+            start_overwrite.add(i)
     dot_start = set()
     for i, r in enumerate(rules):
         st, pk, tl, en = frames[i]
-        if nf > 1 and en < tl and r['compressedikerrorindex']:
+        overwritten = i in in_order_overwrite and i not in start_overwrite
+        if nf > 1 and (en < tl or overwritten) and r['compressedikerrorindex']:
             n = ik_error_frames(d, r)
             for cand in (st + n - 1, st + n - 3):
                 if tl <= cand and (cand >= nf) == (cand != st + n - 1):
@@ -352,7 +374,7 @@ def ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta):
     dot_end = set()
     for i, r in enumerate(rules):
         st, pk, tl, en = frames[i]
-        if nf > 1 and st > pk:
+        if nf > 1 and (st > pk or i in start_overwrite):
             if r['compressedikerrorindex']:
                 n = ik_error_frames(d, r)
                 for cand in (en - n + 1, en - n + 3):

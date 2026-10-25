@@ -135,6 +135,10 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
     rule was wrapped.
   - A rule with end `.` overwrites the next rule's start.
   - The original value can be recovered from the error-stream frame count.
+  - The rewritten range can stay in order, so only the stream length shows it.
+    `iStart` holds the stored (rewritten) start. A footstep's error is zero in x/y at
+    its contact frame, which shows whether the stream begins at an earlier original
+    start or runs to a later original end.
 
 ## Sequence weight lists
 

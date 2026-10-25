@@ -170,6 +170,46 @@ class CompilerRegressions(unittest.TestCase):
                               .replace('"anim_', '"decompiled/anim_'), 'second')
         self.assertEqual(roundtrip.compare(roundtrip.summary(first), roundtrip.summary(second)), [])
 
+    def test_ik_overwritten_ranges_roundtrip(self):
+        # studiomdl's "." range values overwrite a neighbouring rule's end or start after
+        # that rule's errors were computed. When the overwritten range stays in order,
+        # only the error stream shows it; the decompiler must recover the original range
+        # (BT's single-player animations do this).
+        bones = [{'name':'root','parent':-1}, {'name':'hip','parent':0},
+                 {'name':'knee','parent':1}, {'name':'foot','parent':2}]
+        bind = [((0,0,0),(0,0,0)), ((0,0,30),(0,0,0)), ((0,0,-15),(0,0,0)), ((0,0,-15),(0,0,0))]
+        dc.write_smd(self.work / 'body.smd', bones, [bind], cube((0,0,0),(0,0,1),3))
+        frames = [[bind[0], ((3 * math.sin(i * .07), 2 * math.cos(i * .05), 30),(0,0,0)),
+                   ((0,0,-15),(.4 * math.sin(i * .1),0,0)), ((0,0,-15),(0,0,0))] for i in range(117)]
+        dc.write_smd(self.work / 'walk.smd', bones, frames)
+        step = 'height 50 radius 15 floor 0'
+        qc = ('$modelname "test.mdl"\n$body body "body.smd"\n$ikchain "leg" "foot" knee 1 0 0\n'
+              # B's "." start rewrites A's end from 44 to 39 (still after A's tail)
+              '$animation endcase "walk.smd" fps 30 ikrule "leg" footstep range 0 11 28 44 contact 11 %s '
+              'ikrule "leg" footstep range . 50 62 70 contact 50 %s\n'
+              # C's "." end wraps and rewrites A's start from 0 to 5 (still before A's peak)
+              '$animation startcase "walk.smd" fps 30 ikrule "leg" footstep range 0 11 28 39 contact 11 %s '
+              'ikrule "leg" footstep range 39 50 62 70 contact 50 %s '
+              'ikrule "leg" footstep range 70 78 116 . contact 78 %s\n'
+              '$sequence endcase endcase\n$sequence startcase startcase\n') % ((step,) * 5)
+        first = self.compile(qc)
+        data = first.read_bytes()
+        header = mdl53.Model(data).hdr
+        rules = [dc.decode_ik_rules(data, header, a) for a in (0, 1)]
+        self.assertEqual([round(rules[0][0][x] * 116) for x in ('start', 'end')], [0, 39])
+        self.assertEqual(dc.ik_error_frames(data, rules[0][0]), 45)
+        self.assertEqual([round(rules[1][0][x] * 116) for x in ('start', 'end')], [5, 39])
+        self.assertEqual(dc.ik_error_frames(data, rules[1][0]), 40)
+        qc2 = dc.decompile(first, self.work / 'decompiled')
+        second = self.compile(Path(qc2).read_text().replace('"test_bp', '"decompiled/test_bp')
+                              .replace('"anim_', '"decompiled/anim_'), 'second')
+        data2 = second.read_bytes()
+        header2 = mdl53.Model(data2).hdr
+        for a in (0, 1):
+            self.assertEqual([dc.ik_error_frames(data2, r) for r in dc.decode_ik_rules(data2, header2, a)],
+                             [dc.ik_error_frames(data, r) for r in rules[a]])
+        self.assertEqual(roundtrip.compare(roundtrip.summary(first), roundtrip.summary(second)), [])
+
     def test_ikfixup_locks_the_foot(self):
         bones = [{'name':'root','parent':-1}, {'name':'hip','parent':0},
                  {'name':'knee','parent':1}, {'name':'foot','parent':2}]

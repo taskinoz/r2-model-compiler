@@ -5,8 +5,9 @@ animated models, including Respawn root motion (frame movement), bone scale
 animation, IK rules, sequence weight lists, procedural bones, bone followers and UI
 panel meshes. It is not a claim of complete Valve/Respawn feature parity.
 
-Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
-SHA-256: `67fb263ac11ee92ca18e2b338f13c363a9e2968a703ad4199fd37d8a6fddcb29`.
+Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime),
+released as v0.2.0. SHA-256:
+`67fb263ac11ee92ca18e2b338f13c363a9e2968a703ad4199fd37d8a6fddcb29`.
 (v0.1.0 shipped `90c58cc2...`; the changes since are listed under "Single-player
 corpus".)
 
@@ -16,10 +17,10 @@ below regenerate them from your own copy of the game.
 
 ## Automated checks
 
-- Both CTest groups pass: the C++ collision hull suite and seventeen Python compiler/
+- Both CTest groups pass: the C++ collision hull suite and eighteen Python compiler/
   corpus-runner regression tests (including bone scale, IK rules, procedural bones,
-  UI panels, bone followers with per-joint concave collision, and DMX UV2/vertex
-  colour).
+  UI panels, bone followers with per-joint concave collision, DMX UV2/vertex
+  colour, and IK ranges that studiomdl overwrote in order).
 - Blender Source Tools exports from the same scene compile as SMD and binary DMX
   2, 3, 4, 5 and 9. All six outputs match in the compared fields, including two
   physics solids with total volume 24,576 cubic inches.
@@ -37,13 +38,11 @@ compile failure or decompiler exception. **559/602** match every compared field.
 
 Reports:
 
-- `test-output/release-corpus11/results.json` and `release-corpus11.log`: full run
-  (fresh decompile and compile) with the source of the executable above, now
-  including bone followers in the comparison. The differing models are those of
-  v0.1.0's run (`release-corpus10`, 560/602) plus `projectile_arc_ball`, which retail
-  stores without a map-collision block (see "Single-player corpus").
-- The corpus runs used a second build of the same source (`build-dev`); 40 sampled
-  models compile byte-identically with both executables.
+- `test-output/release-corpus12/results.json` and `release-corpus12.log`: full run
+  (fresh decompile and compile) with the executable above, now including bone
+  followers in the comparison. The differing models are those of v0.1.0's run
+  (`release-corpus10`, 560/602) plus `projectile_arc_ball`, which retail stores without
+  a map-collision block (see "Single-player corpus").
 - `test-output/ui-corpus2`: all 35 retail models with UI panels (163 panels), fresh
   decompile and compile with the executable above: 35/35 match, and every panel block
   (header hash, bones, vertices, faces, winding and bounds) is byte-identical to retail.
@@ -59,7 +58,7 @@ python tools\roundtrip.py --jobs 8 --compiler build\r2studiomdl.exe --out test-o
 To recompile existing, unedited exports with another build:
 
 ```powershell
-python tools\recheck_corpus.py --from-report test-output\release-corpus11\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
+python tools\recheck_corpus.py --from-report test-output\release-corpus12\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
 ```
 
 The recheck verifies input model size/timestamps and the exporter/comparison tool
@@ -95,8 +94,7 @@ The 43 remaining differences are retained in the report:
 The animation differences come from bones 6,000-54,000 units from the model origin
 and from how yaw is split between the frame-movement track and the root bone. Retail
 does not record that split, and our heading-based split is within 0.003-0.04 degrees
-of it. The collision differences come from hull reconstruction: retail keeps
-collinear points on hull edges and splits near-coplanar faces slightly differently.
+of it. The collision differences are explained under "Collision face counts" below.
 Volumes and solid counts match. The IK residuals follow from the same animation
 re-quantization: errors are recomputed from the decoded poses. None is claimed lossless.
 
@@ -106,7 +104,7 @@ The 13 single-player map VPKs (`englishclient_sp_*.bsp.pak000_dir.vpk`) hold 11,
 models. 4,997 are byte-identical to `mp_common` models; the other **3,422** unique v53
 models were decompiled and compiled with the executable's source. There were no
 compile failures or decompiler exceptions, and **3,223/3,422** match every compared
-field (`test-output/sp-corpus2`). No single-player model uses flexes, eyeballs or
+field (`test-output/sp-corpus3`, run with the executable above). No single-player model uses flexes, eyeballs or
 vertex animation, and none sets the UV2 flag.
 
 This corpus found problems the multiplayer set does not exercise. They are fixed in
@@ -124,19 +122,39 @@ this build:
 - **Map-collision limit**: single-player rocks keep pieces with up to 82 faces and 99
   planes. The block is now omitted only when a piece exceeds the byte-sized plane or
   vertex indices (255), instead of above 63 faces.
+- **IK ranges overwritten in order**: a `.` range value rewrites a neighbouring rule's
+  end or start after that rule's errors were computed. When the rewritten range stays
+  in order, only the error stream's length shows it. The decompiler now recovers the
+  original range from the stream; a footstep's zero error at its contact frame tells
+  a rewritten start from a rewritten end. This took `titan_buddy_sp_core` from 59.17
+  to an ordinary 0.72 residual.
 
 The 199 remaining differences:
 
 | Models | Difference |
 | --- | --- |
-| 185 models | Collision piece face/plane/edge counts differ; in the large cases examined, vertex counts match and only the merging of near-coplanar faces differs |
+| 185 models | Collision piece face/plane/edge counts differ (see "Collision face counts") |
 | 8 models (`beacon_small_screen_0*_off`, `xo_16_drum`, `triplethreat_drum`, `pipe_modular_painted_red_thin_32_tjunk_02`, `trinity`, `trinity_small`, `trinity_xsmall`) | Retail has no map-collision block (`collisionOffset` 0; the `trinity` models store a count of -1), although their PHY data is ordinary. They appear to predate the block, and a QC cannot express that |
 | `titan_buddy_mp_core` | One attachment rule's error stream carries a constant rotation offset of about 60 degrees in every frame, while the rule's own orientation matches; the sibling animation matches. Treated as stale retail data |
-| `titan_buddy_sp_core` | Footstep error samples differ at the first and last frame of two animations (middle samples match). Not yet explained |
-| `titan_buddy_scripted_s2s` | IK error samples off by 0.27 |
+| `titan_buddy_sp_core`, `titan_buddy_scripted_s2s` | IK footstep error samples off by 0.72 and 0.27 (re-quantization over animations of up to 600 frames) |
 | `birmingham_fleetscale`, `vehicle_draconis_hero_animated` | Sampled world positions off by 1.24 and 0.58 inches (large, distant animated ships) |
 | `beacon_giantfan_panel_01`, `_03` | Retail lists `debug/debugempty` for a mesh with two vertices and no triangles, which an SMD cannot express |
 | `titan_buddy_embark` | Retail sets HAS_SCALE (0x20000) on all 54 animations although only one scales; in the 14 other models with scaled animations the flag marks exactly those |
+
+## Collision face counts
+
+Most remaining differences in both corpora (31 multiplayer, 185 single-player models)
+are face, plane and edge counts of map-collision pieces whose vertices agree. A
+survey of every retail block shows the cause:
+- Retail faces are polygons taken from the source collision mesh (33,223 triangles,
+  39,523 quads, 2,404 larger polygons such as cylinder caps).
+- Retail keeps exactly coplanar neighbours apart (0.0 degrees, 0.00002 units).
+- Retail merges slightly bent quads, up to 0.01 units off plane.
+
+SMD and DMX collision sources reach the compiler as triangles, so it rebuilds faces
+geometrically from the hull, merging triangles that lie on one plane. The planes it
+writes bound the same convex volume. Retail's face grouping cannot be recovered from
+triangle input, so these counts are not expected to match.
 
 ## In-game checks (Northstar)
 
