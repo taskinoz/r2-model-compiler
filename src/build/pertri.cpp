@@ -150,6 +150,48 @@ void BuildPerTriAABB(BuildContext& ctx) {
     for (size_t i = 0; i < all.size(); i++) all[i] = static_cast<int>(i);
     build(all);
 
+    // Number the vertices in leaf order, so each leaf's triangles index a narrow range
+    // (leaves store 16-bit offsets from a base). A leaf whose shared vertices still span
+    // more than that gets its own copies.
+    {
+        std::vector<uint32_t> remap(verts.size(), UINT32_MAX);
+        std::vector<Vec3> ordered;
+        for (auto& l : leaves)
+            for (int t : l.tris)
+                for (int c = 0; c < 3; c++) {
+                    uint32_t& r = remap[tris[t].v[c]];
+                    if (r == UINT32_MAX) {
+                        r = static_cast<uint32_t>(ordered.size());
+                        ordered.push_back(verts[tris[t].v[c]]);
+                    }
+                }
+        for (auto& t : tris)
+            for (int c = 0; c < 3; c++) t.v[c] = remap[t.v[c]];
+        verts = ordered;
+        if (verts.size() > 65535)
+            for (auto& l : leaves) {
+                uint32_t lo = UINT32_MAX, hi = 0;
+                for (int t : l.tris)
+                    for (int c = 0; c < 3; c++) {
+                        lo = std::min(lo, tris[t].v[c]);
+                        hi = std::max(hi, tris[t].v[c]);
+                    }
+                if (l.tris.empty() || hi - lo <= 65535) continue;
+                std::map<uint32_t, uint32_t> copy;
+                for (int t : l.tris)
+                    for (int c = 0; c < 3; c++) {
+                        uint32_t v = tris[t].v[c];
+                        auto it = copy.find(v);
+                        if (it == copy.end()) {
+                            it = copy.emplace(v, static_cast<uint32_t>(verts.size())).first;
+                            Vec3 p = verts[v];
+                            verts.push_back(p);
+                        }
+                        tris[t].v[c] = it->second;
+                    }
+            }
+    }
+
     Buffer b;
     for (auto& n : nodes) {
         for (int k = 0; k < 3; k++) b.U16(quant(n.mn[k], k, false));

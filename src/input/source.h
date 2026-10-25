@@ -53,6 +53,14 @@ struct SrcFace {
     int polygon = -1;      // source polygon (a DMX face) the triangle belongs to; -1 for SMD
 };
 
+// A mesh vertex no triangle uses (DMX face set flagged r2c_vertices_only): retail
+// meshes keep such vertices from their sources.
+struct SrcMeshVertex {
+    int vertex = 0;       // index into Source::vertices
+    int material = 0;     // index into Source::materials
+    size_t faceOrder = 0; // number of faces read before it (keeps mesh order)
+};
+
 struct Source {
     std::string path;      // resolved path on disk
     std::string name;      // name as written in the QC
@@ -62,6 +70,7 @@ struct Source {
     std::vector<std::string> materials;
     std::vector<SrcVertex> vertices;
     std::vector<SrcFace> faces;
+    std::vector<SrcMeshVertex> meshVertices;
     int polygonCount = 0;  // DMX polygons read so far (ids for SrcFace::polygon)
     bool hasMesh() const { return !faces.empty(); }
     int FindBone(const std::string& n) const;

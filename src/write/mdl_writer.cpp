@@ -723,10 +723,8 @@ std::vector<uint8_t> MdlWriter::Run() {
         b_.Append(phy);
     }
     if (!m_.physics.noMapCollision) HdrHere(H_COLLISIONOFFSET);
-    if (!m_.physics.collisionBlock.empty()) {
-        b_.Append(m_.physics.collisionBlock);
-        Hdr(H_STATICCOLLISIONCOUNT, m_.physics.staticCollisionCount);
-    }
+    if (!m_.physics.collisionBlock.empty()) b_.Append(m_.physics.collisionBlock);
+    Hdr(H_STATICCOLLISIONCOUNT, m_.physics.staticCollisionCount);
     // bone followers: int32 bone indices after the collision block, as in retail
     HdrHere(H_BONEFOLLOWEROFFSET);
     if (!m_.boneFollowers.empty()) {

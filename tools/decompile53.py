@@ -340,8 +340,9 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
             positions.append(pos)
             weights.append(wts)
         return shared[key]
-    for material, piece, corners in faces:
-        out = material_faces.setdefault(material, [])
+    for material, piece, corners, *flags in faces:
+        # a fourth element True: vertices no triangle uses (own face set, r2c_vertices_only)
+        out = material_faces.setdefault((material, bool(flags and flags[0])), [])
         for pos, nrm, wts, extra in corners:
             out.append(len(loop_pos))
             loop_pos.append(vertex(piece, pos, wts))
@@ -389,9 +390,10 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
     mesh_name = os.path.splitext(os.path.basename(path))[0]
     face_sets = ',\n'.join(
         '"DmeFaceSet"\n{\n"id" "elementid" %s\n"name" "string" %s\n"material" "DmeMaterial"\n{\n"id" "elementid" %s\n'
-        '"name" "string" %s\n"mtlName" "string" %s\n}\n"faces" %s\n}' % (
-            q(next(ids)), q(mat), q(next(ids)), q(mat), q(mat), arr('int_array', [q(str(i)) for i in idx]))
-        for mat, idx in material_faces.items())
+        '"name" "string" %s\n"mtlName" "string" %s\n}\n"faces" %s%s\n}' % (
+            q(next(ids)), q(mat), q(next(ids)), q(mat), q(mat), arr('int_array', [q(str(i)) for i in idx]),
+            '\n"r2c_vertices_only" "bool" "1"' if only else '')
+        for (mat, only), idx in material_faces.items())
     dag = ('"DmeDag"\n{\n"id" "elementid" %s\n"name" "string" %s\n"shape" "DmeMesh"\n{\n'
            '"id" "elementid" %s\n"name" "string" %s\n"currentState" "element" %s\n'
            '"baseStates" "element_array" ["element" %s]\n"faceSets" "element_array"\n[\n%s\n]\n}\n"transform" %s\n}') % (
@@ -928,6 +930,30 @@ def decompile(path, outdir):
             meshes = [mdl53.u(mdl53.MESH_FIELDS, d, mo + md['meshindex'] + k * 0x74) for k in range(md['nummeshes'])]
             vmodel = vtx['bodyparts'][bpi]['models'][mi]
             names = []
+
+            def corner(vi):
+                pos, nrm, uv, w = vvd_vertex(vi)
+                tan = vvd_tangent(vi)
+                if static:
+                    pos = rotate(ROT_M90, pos)
+                    nrm = rotate(ROT_M90, nrm)
+                    tan = tuple(rotate(ROT_M90, tan[:3])) + (tan[3],)
+                extra = dict(vvc_extra(vi) if vvc else {}, uv=(uv[0], 1 - uv[1]), tangent=tan, id=vi)
+                return (pos, nrm, w, extra)
+            # mesh vertices no triangle of any LOD uses; each belongs to the coarsest LOD
+            # whose vertex count covers it (meshes store their vertices coarse-first)
+            used = {}
+            for ld in vmodel['lods']:
+                for ei, me in enumerate(ld['meshes']):
+                    for sg in me['stripgroups']:
+                        for k in range(sg['numVerts']):
+                            used.setdefault(ei, set()).add(mdl53.u(mdl53.VTX_VERT, d, sg['_off'] + sg['vertOffset'] + k * 9)['origMeshVertID'])
+            orphans = {}
+            for ei, mesh in enumerate(meshes):
+                for i in range(mesh['numvertices']):
+                    if i not in used.get(ei, ()):
+                        lod_of = max([l for l in range(num_lods) if i < mesh['numLODVertexes'][l]] or [0])
+                        orphans.setdefault((ei, lod_of), []).append(vstart + mesh['vertexoffset'] + i)
             for lod in range(num_lods):
                 ld = vmodel['lods'][lod]
                 switch[lod] = ld['switchPoint']
@@ -944,16 +970,10 @@ def decompile(path, outdir):
                             # studiomdl reverses winding on load; write (a, c, b)
                             for c in (0, 2, 1):
                                 vv = verts[idx[t + c]]
-                                vi = vstart + mesh['vertexoffset'] + vv['origMeshVertID']
-                                pos, nrm, uv, w = vvd_vertex(vi)
-                                tan = vvd_tangent(vi)
-                                if static:
-                                    pos = rotate(ROT_M90, pos)
-                                    nrm = rotate(ROT_M90, nrm)
-                                    tan = tuple(rotate(ROT_M90, tan[:3])) + (tan[3],)
-                                extra = dict(vvc_extra(vi) if vvc else {}, uv=(uv[0], 1 - uv[1]), tangent=tan, id=vi)
-                                tri.append((pos, nrm, w, extra))
+                                tri.append(corner(vstart + mesh['vertexoffset'] + vv['origMeshVertID']))
                             tris.append((mat, tri))
+                    if (ei, lod) in orphans:
+                        tris.append((mat, [corner(vi) for vi in orphans[(ei, lod)]], True))
                 # DMX keeps what SMD can't: vertex colours, second UVs and the stored tangents,
                 # which also decide which vertices studiomdl kept apart
                 smd_name = (lod == 0 and source_name(md['name'])) or '%s_bp%d_m%d_lod%d.dmx' % (base, bpi, mi, lod)
@@ -961,7 +981,7 @@ def decompile(path, outdir):
                 skel = [[(b['pos'], b['rot']) for b in bones]]
                 if static:
                     skel = [[((0, 0, 0), (0, 0, 0)) for b in bones]]
-                write_dmx(os.path.join(outdir, smd_name), bones, skel[0], [(mat, 0, tri) for mat, tri in tris])
+                write_dmx(os.path.join(outdir, smd_name), bones, skel[0], [(t[0], 0) + t[1:] for t in tris])
                 names.append(smd_name)
                 if lod:
                     lod_models.setdefault(lod, []).append((names[0], smd_name))
@@ -1182,11 +1202,15 @@ def decompile(path, outdir):
         qc.append('$node "%s"' % nm)
     if h['localNodeUnk']:
         qc.append('$localnodeunk %d' % h['localNodeUnk'])
-    # an explicit hull ($bbox) when it is not sequence 0's box
+    # an explicit hull ($bbox) when it is not sequence 0's box (or not zero without sequences)
+    hull = list(h['hull_min']) + list(h['hull_max'])
     if h['numlocalseq']:
         s0 = mdl53.u(mdl53.SEQDESC_FIELDS, d, h['localseqindex'])
-        if list(s0['bbmin']) + list(s0['bbmax']) != list(h['hull_min']) + list(h['hull_max']):
-            qc.append('$bbox %s' % ' '.join('%.9g' % v for v in list(h['hull_min']) + list(h['hull_max'])))
+        derived = list(s0['bbmin']) + list(s0['bbmax'])
+    else:
+        derived = [0.0] * 6
+    if hull != derived:
+        qc.append('$bbox %s' % ' '.join('%.9g' % v for v in hull))
     for si in range(h['numlocalseq']):
         o = h['localseqindex'] + si * 0xE8
         s = mdl53.u(mdl53.SEQDESC_FIELDS, d, o)
@@ -1404,6 +1428,8 @@ def decompile(path, outdir):
         # retail models built without the map-collision block (collisionOffset 0)
         if not h['collisionOffset']:
             lines.append('\t$nomapcollision')
+            if h['staticCollisionCount']:
+                lines.append('\t$staticcollisioncount %d' % h['staticCollisionCount'])  # retail -1 (r2c)
         # several convex pieces under one joint (no "concave" key in retail's text)
         if jointed and any(len([L for L in s['ledges'] if not L['has_children']]) > 1 for s in p['solids']):
             lines.append('\t$concaveperjoint')

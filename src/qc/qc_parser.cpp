@@ -1247,6 +1247,11 @@ void Parser::CmdCollision(bool joints) {
         else if (IEquals(cmd, "$nomapcollision"))
             // r2c extension: some retail models carry PHY data but no map-collision block
             c.noMapCollision = true;
+        else if (IEquals(cmd, "$staticcollisioncount")) {
+            // r2c extension: the header's static collision count as stored (retail has -1)
+            c.staticCount = static_cast<int>(fl(args(1), 0));
+            c.staticCountSet = true;
+        }
         else if (IEquals(cmd, "$concaveperjoint")) {
             // splits each joint into convex pieces without the "concave" editparams key
             // (retail jointed models with multi-piece solids never carry it)

@@ -318,7 +318,9 @@ struct QcCollision {
     float damping = 0, rotdamping = 0, inertia = 1, drag = -1;
     bool concave = false;
     bool concavePerJoint = false;
-    bool noMapCollision = false;  // $nomapcollision (r2c extension): write no map-collision block
+    bool noMapCollision = false;
+    bool staticCountSet = false;  // $staticcollisioncount (r2c extension)
+    int staticCount = 0;  // $nomapcollision (r2c extension): write no map-collision block
     int maxConvexPieces = 40;
     bool noSelfCollisions = false;
     bool assumeWorldSpace = false;

@@ -634,6 +634,17 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                         if (v.weights.empty()) v.weights.push_back({rigidBone, 1.f});
                         return v;
                     };
+                    // r2c: a face set of mesh vertices no triangle uses (retail keeps them)
+                    const Attr* vertsOnly = fs->Get("r2c_vertices_only");
+                    if (vertsOnly && !vertsOnly->ints.empty() && vertsOnly->ints[0]) {
+                        for (int idx : faces->ints) {
+                            if (idx < 0 || idx >= static_cast<int>(posIdx->ints.size())) continue;
+                            usedPositions.insert(posIdx->ints[idx]);
+                            src->meshVertices.push_back({static_cast<int>(src->vertices.size()), matIndex, src->faces.size()});
+                            src->vertices.push_back(makeVert(idx));
+                        }
+                        continue;
+                    }
                     for (int idx : faces->ints) {
                         if (idx >= 0) {
                             poly.push_back(idx);

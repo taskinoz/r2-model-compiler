@@ -209,6 +209,7 @@ void BuildContext::BuildBounds() {
         std::vector<bool> used(ip->gverts.size(), false);
         for (auto& f : ip->faces)
             for (int c = 0; c < 3; c++) used[f.v[c]] = true;
+        for (auto& mv : ip->src->meshVertices) used[mv.vertex] = true;
         for (size_t i = 0; i < ip->gverts.size(); i++)
             if (used[i]) meshVerts.push_back(&ip->gverts[i]);
     }
@@ -748,9 +749,10 @@ CompiledModel Build(QcModelDef& qc) {
     }
     if (out.hasVertexColor) qc.flags |= STUDIOHDR_FLAGS_USES_VERTEX_COLOR;
     if (out.hasUV2) qc.flags |= STUDIOHDR_FLAGS_USES_UV2;
-    // retail sets this on every single-bone model, physics or not, unless its collision
-    // is per joint or has no map-collision block
-    if (out.bones.size() == 1 && !(qc.collision.present && (qc.collision.joints || qc.collision.noMapCollision)))
+    // retail sets this on every single-bone model except those with physics, no
+    // map-collision block and a static collision count of 0 (4/4 across both corpora)
+    if (out.bones.size() == 1 &&
+        !(qc.collision.present && qc.collision.noMapCollision && out.physics.staticCollisionCount == 0))
         qc.flags |= STUDIOHDR_FLAGS_RESPAWN_800000;
     out.flags = qc.flags;
     if (qc.staticProp) out.flags |= STUDIOHDR_FLAGS_STATIC_PROP;

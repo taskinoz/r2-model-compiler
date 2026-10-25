@@ -1260,6 +1260,7 @@ void BuildCollisionModel(BuildContext& ctx) {
         std::vector<std::array<int, 4>> counts;
         bool ok = !qc.noMapCollision;
         ctx.out.physics.noMapCollision = qc.noMapCollision;
+        if (qc.staticCountSet) ctx.out.physics.staticCollisionCount = qc.staticCount;
         for (auto& s : solids)
             for (auto& h : s.pieces) {
                 int faces, bevels, edges;
@@ -1273,8 +1274,9 @@ void BuildCollisionModel(BuildContext& ctx) {
                 counts.push_back({faces, faces + bevels, edges, static_cast<int>(h.verts.size())});
             }
         if (!ok && !qc.joints && !ctx.out.bones.empty()) {
-            // retail rigid models without a block point bone 0 at entry 0 with no pieces
-            ctx.out.bones[0].collisionIndex = 0;
+            // retail rigid models without a block point bone 0 at entry 0 with no pieces;
+            // those with a static count of -1 at no entry (-1, 3/3)
+            ctx.out.bones[0].collisionIndex = qc.staticCountSet && qc.staticCount < 0 ? -1 : 0;
             ctx.out.bones[0].collisionCount = 0;
         }
         if (ok && !blobs.empty()) {

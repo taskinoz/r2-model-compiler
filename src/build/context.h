@@ -18,6 +18,7 @@ struct SrcInst {
     float scale = 1;
     bool reverse = false;
     bool active = false;  // used as a visible model (vertex bones count as used)
+    std::vector<int> meshVertexTexture;  // global texture per Source::meshVertices entry
 
     std::vector<SrcBone> bones;
     std::vector<std::vector<BoneFrame>> frames;

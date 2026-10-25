@@ -50,9 +50,16 @@ SrcInst* BuildContext::Instance(const std::shared_ptr<Source>& s, float scale, b
     // Only visible models add materials; collision and animation-only files must not
     // grow the texture table (studiomdl removes collision materials the same way).
     inst->faceTexture.assign(inst->faces.size(), -1);
-    if (active)
-        for (size_t i = 0; i < inst->faces.size(); i++)
-            inst->faceTexture[i] = qc.TextureIndex(s->materials[inst->faces[i].material], true);
+    inst->meshVertexTexture.assign(s->meshVertices.size(), -1);
+    if (active) {
+        // textures in first-use order, mesh-only vertices at their place among the faces
+        size_t mv = 0;
+        for (size_t i = 0; i <= inst->faces.size(); i++) {
+            for (; mv < s->meshVertices.size() && s->meshVertices[mv].faceOrder <= i; mv++)
+                inst->meshVertexTexture[mv] = qc.TextureIndex(s->materials[s->meshVertices[mv].material], true);
+            if (i < inst->faces.size()) inst->faceTexture[i] = qc.TextureIndex(s->materials[inst->faces[i].material], true);
+        }
+    }
     insts.push_back(std::move(inst));
     return insts.back().get();
 }

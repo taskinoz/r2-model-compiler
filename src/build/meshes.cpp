@@ -273,12 +273,23 @@ void BuildContext::BuildMeshes() {
                 if (lodInst[l] && lodInst[l]->gverts.empty() && !lodInst[l]->verts.empty())
                     Fatal("internal: LOD source %s was not remapped", lodInst[l]->label.c_str());
 
-            // materials of LOD 0 in the order the source first uses them (retail mesh order)
+            // materials of LOD 0 in the order the source first uses them (retail mesh order),
+            // counting mesh-only vertices at their place among the faces
             std::vector<int> mats;
-            for (size_t f = 0; f < base->faces.size(); f++)
-                if (std::find(mats.begin(), mats.end(), base->faceTexture[f]) == mats.end()) mats.push_back(base->faceTexture[f]);
+            auto useMat = [&](int t) {
+                if (t >= 0 && std::find(mats.begin(), mats.end(), t) == mats.end()) mats.push_back(t);
+            };
+            {
+                const auto& mv = base->src->meshVertices;
+                size_t k = 0;
+                for (size_t f = 0; f <= base->faces.size(); f++) {
+                    for (; k < mv.size() && mv[k].faceOrder <= f; k++) useMat(base->meshVertexTexture[k]);
+                    if (f < base->faces.size()) useMat(base->faceTexture[f]);
+                }
+            }
 
             for (int mat : mats) {
+                bool meshOnly0 = false;  // LOD 0 has vertices of this mesh without triangles
                 MeshBuilder mb;
                 mb.material = mat;
                 mb.lodIdx.resize(numLods);
@@ -301,8 +312,15 @@ void BuildContext::BuildMeshes() {
                             mb.lodIdx[l].push_back(static_cast<uint32_t>(mb.Add(v, l)));
                         }
                     }
+                    // vertices no triangle uses still belong to the mesh at this LOD
+                    const auto& mv = s->src->meshVertices;
+                    for (size_t k = 0; k < mv.size(); k++)
+                        if (s->meshVertexTexture[k] == mat) {
+                            mb.Add(MakeVertex(s->gverts[mv[k].vertex], bones, lodBoneReplace[l]), l);
+                            if (l == 0) meshOnly0 = true;
+                        }
                 }
-                if (mb.lodIdx[0].empty()) continue;
+                if (mb.lodIdx[0].empty() && !meshOnly0) continue;
                 // LODs without their own triangles for this mesh draw nothing.
 
                 // sort vertices coarse-LOD first (stable within a LOD)
@@ -339,6 +357,16 @@ void BuildContext::BuildMeshes() {
                         const CVertex& v = mesh.verts[i];
                         for (int b = 0; b < v.numBones; b++) bones[v.bone[b]].flags |= (BONE_USED_BY_VERTEX_LOD0 << l);
                     }
+                // vertices no triangle uses count at their own LOD
+                {
+                    std::vector<bool> referenced(mesh.verts.size(), false);
+                    for (auto& ml : mesh.lods)
+                        for (uint32_t i : ml.indices) referenced[i] = true;
+                    for (size_t i = 0; i < mesh.verts.size(); i++)
+                        if (!referenced[i])
+                            for (int b = 0; b < mesh.verts[i].numBones; b++)
+                                bones[mesh.verts[i].bone[b]].flags |= (BONE_USED_BY_VERTEX_LOD0 << mesh.vertMaxLod[i]);
+                }
                 om.meshes.push_back(std::move(mesh));
             }
             om.boundingRadius = 0;  // retail v53 models always store 0 here
