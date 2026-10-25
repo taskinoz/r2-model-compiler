@@ -206,3 +206,6 @@ MDL files are not direct inputs: this compiler reads QC/SMD/DMX and targets R2 v
 
 The ZIP includes the executable, documentation and authored source examples. It
 does not include the retail corpus or game textures/materials.
+The package was rebuilt from a clean `dist` folder with the executable above and
+extracted to a new folder; its `r2studiomdl.exe` has the SHA-256 above, and all three
+bundled examples compiled with it.

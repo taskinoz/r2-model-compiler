@@ -8,7 +8,9 @@ limitations.
 ## Deliverables
 
 - build/r2studiomdl.exe: Windows x64 Release, static C++ runtime.
-- dist/r2-model-compiler-win64.zip: executable, docs and three authored examples.
+- dist/r2-model-compiler-win64.zip: executable, docs and three authored examples
+  (rebuilt 25 October 2026 with build 90c58cc2...; ZIP SHA-256
+  c8965753a621d6a274fdee28fa7e6a77b0d632ad4c8f13f5d195184b797f6ae5).
 - examples/static_prop, examples/physics_prop, examples/animated_prop.
 - Source, tests and examples are committed. Generated binaries, packages and
   corpus exports are ignored.
