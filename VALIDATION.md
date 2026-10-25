@@ -2,11 +2,13 @@
 
 This build is usable for Titanfall 2 static props, moving physics props and skinned,
 animated models, including Respawn root motion (frame movement), bone scale
-animation, IK rules, sequence weight lists, procedural bones and UI panel meshes. It is not a claim of complete Valve/Respawn feature parity.
+animation, IK rules, sequence weight lists, procedural bones, bone followers and UI
+panel meshes. It is not a claim of complete Valve/Respawn feature parity.
 
-Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime),
-released as v0.1.0. SHA-256:
-`90c58cc2374b1e3e4618b90c8c3ef940f9686de797af1ccd847336d5540af009`.
+Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
+SHA-256: `67fb263ac11ee92ca18e2b338f13c363a9e2968a703ad4199fd37d8a6fddcb29`.
+(v0.1.0 shipped `90c58cc2...`; the changes since are listed under "Single-player
+corpus".)
 
 Paths under `test-output/` name the local report folders the tools produced (JSON
 results, logs and screenshots). They are not part of the repository; the commands
@@ -14,9 +16,10 @@ below regenerate them from your own copy of the game.
 
 ## Automated checks
 
-- Both CTest groups pass: the C++ collision hull suite and fifteen Python compiler/
-  corpus-runner regression tests (including bone scale, IK rules, procedural bones and
-  UI panels).
+- Both CTest groups pass: the C++ collision hull suite and seventeen Python compiler/
+  corpus-runner regression tests (including bone scale, IK rules, procedural bones,
+  UI panels, bone followers with per-joint concave collision, and DMX UV2/vertex
+  colour).
 - Blender Source Tools exports from the same scene compile as SMD and binary DMX
   2, 3, 4, 5 and 9. All six outputs match in the compared fields, including two
   physics solids with total volume 24,576 cubic inches.
@@ -30,14 +33,17 @@ below regenerate them from your own copy of the game.
 ## Retail corpus
 
 All **602/602** retail `mp_common` MDL v53 models decompiled and compiled without a
-compile failure or decompiler exception. **560/602** match every compared field.
+compile failure or decompiler exception. **559/602** match every compared field.
 
 Reports:
 
-- `test-output/release-corpus10/results.json` and `release-corpus10.log`: full run
-  (fresh decompile and compile) with the executable above, now including UI panels in
-  the comparison. The 42 differing models are exactly those of the previous build's
-  run (`release-corpus9`, SHA-256 `0b386047...`, before `ikfixup` and UI panels).
+- `test-output/release-corpus11/results.json` and `release-corpus11.log`: full run
+  (fresh decompile and compile) with the source of the executable above, now
+  including bone followers in the comparison. The differing models are those of
+  v0.1.0's run (`release-corpus10`, 560/602) plus `projectile_arc_ball`, which retail
+  stores without a map-collision block (see "Single-player corpus").
+- The corpus runs used a second build of the same source (`build-dev`); 40 sampled
+  models compile byte-identically with both executables.
 - `test-output/ui-corpus2`: all 35 retail models with UI panels (163 panels), fresh
   decompile and compile with the executable above: 35/35 match, and every panel block
   (header hash, bones, vertices, faces, winding and bounds) is byte-identical to retail.
@@ -53,7 +59,7 @@ python tools\roundtrip.py --jobs 8 --compiler build\r2studiomdl.exe --out test-o
 To recompile existing, unedited exports with another build:
 
 ```powershell
-python tools\recheck_corpus.py --from-report test-output\release-corpus10\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
+python tools\recheck_corpus.py --from-report test-output\release-corpus11\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
 ```
 
 The recheck verifies input model size/timestamps and the exporter/comparison tool
@@ -65,14 +71,14 @@ and frame counts, sampled world positions of non-delta animations (with frame
 movement applied), sampled raw local values of delta animations, sampled bone scale, IK rules (type,
 chain, bone, slot, ranges, footstep parameters, targets and sampled error values),
 sequence weight lists, procedural bones (type and parameters), UI panels (hash, name,
-parent bones, vertices, faces, winding, bounds),
+parent bones, vertices, faces, winding, bounds), bone followers,
 physics solid counts/volume, attachment count, the map-collision header count, the
 face/plane/edge/vertex counts of every collision piece grouped by owning bone, and
 each bone's collision reference. Entry order within the collision block is not
 compared: retail jointed models order it by neither bone nor PHY solid. Animation
 samples are first, middle and last frames. This is not a byte-for-byte comparison.
 
-The 42 remaining differences are retained in the report:
+The 43 remaining differences are retained in the report:
 
 | Models | Difference |
 | --- | --- |
@@ -84,6 +90,7 @@ The 42 remaining differences are retained in the report:
 | `widow` | 0.92 inches |
 | `titan_medium_sp_core`, `titan_heavy_sp_core`, `titan_medium_mp_reactions`, `titan_medium_mp_core` | IK footstep error samples differ by 0.27-0.50 (about 0.3-0.6 degrees at the comparison's 50-unit lever) |
 | 31 models (titans, gibs, weapons, projectiles, `marvin`, `super_spectre_*`) | One or two collision pieces differ by 1-3 faces, bevels, edges or vertices |
+| `projectile_arc_ball` | Retail has no map-collision block (`collisionOffset` 0); see below |
 
 The animation differences come from bones 6,000-54,000 units from the model origin
 and from how yaw is split between the frame-movement track and the root bone. Retail
@@ -92,6 +99,44 @@ of it. The collision differences come from hull reconstruction: retail keeps
 collinear points on hull edges and splits near-coplanar faces slightly differently.
 Volumes and solid counts match. The IK residuals follow from the same animation
 re-quantization: errors are recomputed from the decoded poses. None is claimed lossless.
+
+## Single-player corpus
+
+The 13 single-player map VPKs (`englishclient_sp_*.bsp.pak000_dir.vpk`) hold 11,709
+models. 4,997 are byte-identical to `mp_common` models; the other **3,422** unique v53
+models were decompiled and compiled with the executable's source. There were no
+compile failures or decompiler exceptions, and **3,223/3,422** match every compared
+field (`test-output/sp-corpus2`). No single-player model uses flexes, eyeballs or
+vertex animation, and none sets the UV2 flag.
+
+This corpus found problems the multiplayer set does not exercise. They are fixed in
+this build:
+
+- **Bone followers** (28 animated props such as doors, cranes and platforms) are
+  decompiled, compared, kept through bone pruning, and written after the collision
+  block, as retail stores them.
+- **`$concaveperjoint`**: jointed models whose joints own several convex pieces
+  (20 models) carry no `"concave"` key in the PHY text. `$concaveperjoint` now splits
+  each joint without setting that key, and the decompiler emits it. Before the fix
+  these pieces merged into single hulls, with 1.3-80 times the volume.
+- **LOD order**: studiomdl keeps `$lod` script order even when switch distances are
+  not ascending (retail has 9 such models); the compiler no longer sorts them.
+- **Map-collision limit**: single-player rocks keep pieces with up to 82 faces and 99
+  planes. The block is now omitted only when a piece exceeds the byte-sized plane or
+  vertex indices (255), instead of above 63 faces.
+
+The 199 remaining differences:
+
+| Models | Difference |
+| --- | --- |
+| 185 models | Collision piece face/plane/edge counts differ; in the large cases examined, vertex counts match and only the merging of near-coplanar faces differs |
+| 8 models (`beacon_small_screen_0*_off`, `xo_16_drum`, `triplethreat_drum`, `pipe_modular_painted_red_thin_32_tjunk_02`, `trinity`, `trinity_small`, `trinity_xsmall`) | Retail has no map-collision block (`collisionOffset` 0; the `trinity` models store a count of -1), although their PHY data is ordinary. They appear to predate the block, and a QC cannot express that |
+| `titan_buddy_mp_core` | One attachment rule's error stream carries a constant rotation offset of about 60 degrees in every frame, while the rule's own orientation matches; the sibling animation matches. Treated as stale retail data |
+| `titan_buddy_sp_core` | Footstep error samples differ at the first and last frame of two animations (middle samples match). Not yet explained |
+| `titan_buddy_scripted_s2s` | IK error samples off by 0.27 |
+| `birmingham_fleetscale`, `vehicle_draconis_hero_animated` | Sampled world positions off by 1.24 and 0.58 inches (large, distant animated ships) |
+| `beacon_giantfan_panel_01`, `_03` | Retail lists `debug/debugempty` for a mesh with two vertices and no triangles, which an SMD cannot express |
+| `titan_buddy_embark` | Retail sets HAS_SCALE (0x20000) on all 54 animations although only one scales; in the 14 other models with scaled animations the flag marks exactly those |
 
 ## In-game checks (Northstar)
 
@@ -211,6 +256,5 @@ MDL files are not direct inputs: this compiler reads QC/SMD/DMX and targets R2 v
 
 The ZIP includes the executable, documentation and authored source examples. It
 does not include the retail corpus or game textures/materials.
-The package was rebuilt from a clean `dist` folder with the executable above and
-extracted to a new folder; its `r2studiomdl.exe` has the SHA-256 above, and all three
-bundled examples compiled with it.
+The v0.1.0 package was rebuilt from a clean `dist` folder and extracted to a new
+folder. Its `r2studiomdl.exe` (`90c58cc2...`) compiled all three bundled examples.

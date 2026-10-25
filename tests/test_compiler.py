@@ -65,6 +65,31 @@ class CompilerRegressions(unittest.TestCase):
             self.assertEqual(len([ledge for ledge in physical['solids'][0]['ledges']
                                   if not ledge['has_children']]), count)
 
+    def test_bone_followers_and_concave_per_joint_roundtrip(self):
+        # Animated single-player props: one joint owns two separate convex pieces
+        # ($concaveperjoint, no "concave" key in the PHY text, as in retail) and is
+        # listed as a bone follower after the collision block.
+        bones = [{'name':'root', 'parent':-1}, {'name':'arm', 'parent':0}]
+        bind = [((0,0,0),(0,0,0)), ((0,0,10),(0,0,0))]
+        dc.write_smd(self.work / 'body.smd', bones, [bind], cube((0,0,0),(0,0,1),0) + cube((0,0,10),(0,0,1),1))
+        dc.write_smd(self.work / 'phys.smd', bones, [bind],
+                     cube((0,0,10),(0,0,1),1) + cube((6,0,10),(0,1,0),1))
+        output = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n$sequence idle "body.smd"\n'
+                              '$collisionjoints "phys.smd" { $concaveperjoint }\n$bonefollower "arm"\n')
+        data = output.read_bytes()
+        header = mdl53.Model(data).hdr
+        physical = phy.parse_phy(data[header['phyOffset']:header['phyOffset']+header['phySize']])
+        self.assertEqual([len([L for L in s['ledges'] if not L['has_children']]) for s in physical['solids']], [2])
+        self.assertNotIn('"concave"', physical['text'])
+        self.assertEqual(header['boneFollowerCount'], 1)
+        self.assertGreaterEqual(header['boneFollowerOffset'], header['collisionOffset'])
+        self.assertEqual(roundtrip.summary(output)['followers'], ['arm'])
+        qc2 = Path(dc.decompile(output, self.work / 'decompiled')).read_text()
+        self.assertIn('$concaveperjoint', qc2)
+        self.assertIn('$bonefollower "arm"', qc2)
+        second = self.compile(qc2.replace('"test_', '"decompiled/test_').replace('"anim_', '"decompiled/anim_'), 'second')
+        self.assertEqual(roundtrip.compare(roundtrip.summary(output), roundtrip.summary(second)), [])
+
     def test_animation_reencoding_and_selected_frame_decode(self):
         bones = [{'name':'root','parent':-1}, {'name':'tip','parent':0}]
         bind = [((0,0,0),(0,0,0)), ((6000,0,0),(0,0,0))]
@@ -280,6 +305,33 @@ class CompilerRegressions(unittest.TestCase):
                                   % (mesh,mesh,motion), 'dmx' + suffix)
             summaries.append(roundtrip.summary(output))
         self.assertEqual(roundtrip.compare(*summaries), [])
+
+    def test_dmx_second_uv_set_and_vertex_colour(self):
+        # Blender Source Tools (model format 22) writes extra UV maps as texcoord$1 and
+        # colour attributes as color$0; both land in the VVC block, as the UV2 and
+        # vertex-colour header flags announce.
+        text = (ROOT / 'tests/dmx/cube_arm_kv2.dmx').read_text()
+        text = text.replace('"texcoord$0", ', '"texcoord$0", "texcoord$1", "color$0", ')
+        extra = ('\t"texcoord$1" "vector2_array" ["0.25 0.75"]\n'
+                 '\t"texcoord$1Indices" "int_array" [%s]\n'
+                 '\t"color$0" "vector4_array" ["1.0 0.0 0.0 1.0"]\n'
+                 '\t"color$0Indices" "int_array" [%s]\n') % ((', '.join(['"0"'] * 24),) * 2)
+        anchor = '\t"texcoord$0" "vector2_array"'
+        self.assertIn(anchor, text)
+        (self.work / 'uv2.dmx').write_text(text.replace(anchor, extra + anchor, 1))
+        output = self.compile('$modelname "uv2.mdl"\n$body body "uv2.dmx"\n$sequence idle "uv2.dmx"\n')
+        data = output.read_bytes()
+        header = mdl53.Model(data).hdr
+        self.assertTrue(header['flags'] & 0x2000000)  # uses UV2
+        self.assertTrue(header['flags'] & 0x1000000)  # uses vertex colour
+        vvc = data[header['vvcOffset']:header['vvcOffset'] + header['vvcSize']]
+        self.assertEqual(vvc[:4], b'IDCV')
+        lod0 = struct.unpack_from('<i', vvc, 16)[0]
+        colours, uv2 = struct.unpack_from('<2i', vvc, 48)
+        self.assertGreater(lod0, 0)
+        for i in range(lod0):
+            self.assertEqual(tuple(vvc[colours + 4 * i:colours + 4 * i + 4]), (255, 0, 0, 255))
+            self.assertEqual(struct.unpack_from('<2f', vvc, uv2 + 8 * i), (0.25, 0.25))  # V is flipped
 
     def test_single_frame_retail_nan_event_cycle(self):
         (self.work / 'body.smd').write_text((ROOT / 'tests/box/box.smd').read_text())

@@ -81,6 +81,18 @@ Then:
 python tools\roundtrip.py --jobs 8 --compiler build\r2studiomdl.exe --out test-output\run <out_dir>\models
 ```
 
+The single-player corpus is spread over 13 map VPKs
+(`englishclient_sp_*.bsp.pak000_dir.vpk`, about 11,700 files). Extract each VPK into
+its own folder. Then drop files byte-identical to `mp_common` or to each other (by
+SHA-256), keeping a folder structure so equal basenames do not collide. That leaves
+3,422 unique models, a run of about 70 GB. Single-player models exercise features
+`mp_common` does not: bone followers, multi-piece joints (`$concaveperjoint`),
+non-ascending LOD order, large map-collision pieces, and retail models built by older
+tools without a map-collision block.
+
+Build experiments in `build-dev` (`build-dev.bat`) while a corpus run is using
+`build\r2studiomdl.exe`. Rebuilding the executable a run is using breaks that run.
+
 Validation standard:
 - Never loosen a comparison threshold to make a model pass.
 - Explain each remaining difference, and list it in VALIDATION.md.

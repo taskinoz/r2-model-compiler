@@ -177,10 +177,8 @@ void BuildContext::BuildMeshes() {
         if (!l.shadow) lods.push_back(&l);
     for (auto& l : qc.lods)
         if (l.shadow) lods.push_back(&l);
-    std::sort(lods.begin() + 1, lods.end(), [](const QcLod* a, const QcLod* b) {
-        if (a->shadow != b->shadow) return !a->shadow;
-        return a->switchPoint < b->switchPoint;
-    });
+    // studiomdl keeps script order even when switch points are not ascending; retail
+    // has such models (e.g. switch 250 before 40), so the order is not sorted here
     int numLods = static_cast<int>(lods.size());
     if (numLods > kMaxLods) Fatal("too many LODs (%d, max %d)", numLods, kMaxLods);
     out.numLods = numLods;

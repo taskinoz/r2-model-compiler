@@ -30,10 +30,14 @@ IK rules, procedural bones and weapon UI panels.
 - Procedural bones: jiggle, quaternion interpolation, axis interpolation, and aim at a
   bone or attachment.
 - Weapon UI panel meshes (`$uipanel`), such as ammo counters and sight screens.
+- Bone followers (`$bonefollower`) for animated props with moving collision, vertex
+  colours and a second UV set (from DMX).
 
-All 602 retail multiplayer models decompile and recompile with it. 560 match the
-original in every compared field, and the rest differ by documented sub-inch amounts.
-See [VALIDATION.md](VALIDATION.md) for the evidence and in-game checks.
+All 602 retail multiplayer models and 3,422 unique single-player models decompile and
+recompile with it. 559 and 3,223 of them match the original in every compared field.
+The remainder are documented: mostly collision hulls that merge near-coplanar faces
+differently, sub-inch animation re-quantization, and a few retail models built by older
+tools. See [VALIDATION.md](VALIDATION.md) for the evidence and in-game checks.
 
 ## Quick start
 
@@ -144,6 +148,39 @@ $uipanel "models/weapons/attachments/my_counter"
   is MurmurHash3 x86_32 with seed 0, every byte ANDed with 0xDF (so case does not
   matter), and the length counting the terminating nul.
 - At most 256 vertices and 64 faces; only the first 32 faces can be `ccw`.
+
+### Vertex colours and a second UV set
+
+A v53 model can carry per-vertex colours and a second UV set (UV2) for materials that
+use them. Both are stored in the model's VVC block, and the header flags `0x1000000`
+(vertex colour) and `0x2000000` (UV2) announce them. SMD has no field for either, so
+use DMX.
+
+In Blender, with Blender Source Tools:
+
+1. Name the UV maps `texcoord$0` (the normal UVs) and `texcoord$1` (UV2). If no map
+   is called `texcoord$0`, the map active for rendering is exported as the first set.
+2. For vertex colours, name a colour attribute `color$0`.
+3. In the Source Engine Export panel, choose DMX. Leave Engine Path empty, then set
+   DMX Version to encoding **9** and format **22**. Blender Source Tools exports
+   `$`-named layers only at model format 22 or above.
+
+Then reference the DMX as usual:
+
+```
+$modelname "props/screen_panel.mdl"
+$body body "screen_panel.dmx"
+$sequence idle "screen_panel.dmx"
+```
+
+The compiler sets the UV2 and vertex-colour flags automatically when the DMX has
+`texcoord$1` or `color$0`. `$useextratexcoords` and `$usevertexcolor` set the flags
+even without the data; missing values are written as UV (0, 0) and white. As with the
+first set, UV2's V coordinate is flipped on import.
+
+Retail Titanfall 2 models use vertex colours (about a quarter of them) but never set
+the UV2 flag. The UV2 data is written correctly (covered by a regression test), but
+it only shows in game if the model's material reads a second UV set.
 
 ## Building from source
 

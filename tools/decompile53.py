@@ -735,6 +735,10 @@ def decompile(path, outdir):
         o = h['localattachmentindex'] + i * mdl53.size(mdl53.ATTACH_FIELDS)
         att_names.append(mdl53.cstr(d, o + struct.unpack_from('<i', d, o)[0]))
     qc.extend(procedural_files(d, h, bones, att_names, outdir, base))
+    # bone followers (bones whose physics objects follow their animation)
+    if h['boneFollowerCount']:
+        for k in struct.unpack_from('<%di' % h['boneFollowerCount'], d, h['boneFollowerOffset']):
+            qc.append('$bonefollower "%s"' % bones[k]['name'])
     # RUI panel meshes, written out in full (with the original hash)
     for panel in decode_ui_panels(d, h):
         qc.extend(uipanel_lines(panel, bones))
@@ -1003,6 +1007,9 @@ def decompile(path, outdir):
             lines.append('\t$mass %s' % mass.group(1))
         if '"concave" "1"' in text:
             lines.append('\t$concave')
+        # several convex pieces under one joint (no "concave" key in retail's text)
+        if jointed and any(len([L for L in s['ledges'] if not L['has_children']]) > 1 for s in p['solids']):
+            lines.append('\t$concaveperjoint')
         for blk in re.findall(r'ragdollconstraint\s*\{([^}]*)\}', text):
             kv = dict(re.findall(r'"([^"]+)"\s+"([^"]*)"', blk))
             child = solid_names[int(kv['child'])]

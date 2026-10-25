@@ -1226,7 +1226,8 @@ void Parser::CmdCollision(bool joints) {
         else if (IEquals(cmd, "$concave"))
             c.concave = true;
         else if (IEquals(cmd, "$concaveperjoint")) {
-            c.concave = true;
+            // splits each joint into convex pieces without the "concave" editparams key
+            // (retail jointed models with multi-piece solids never carry it)
             c.concavePerJoint = true;
         } else if (IEquals(cmd, "$maxconvexpieces"))
             c.maxConvexPieces = static_cast<int>(fl(args(1), 0));

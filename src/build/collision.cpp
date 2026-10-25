@@ -372,11 +372,13 @@ std::vector<uint8_t> BuildCompactSurface(const Solid& s, DVec3& dragOut) {
 // Respawn map-collision block (one brush per convex piece, HL units)
 // ---------------------------------------------------------------------------
 
-// Retail rules (measured over mp_common): an edge gets a bevel plane only when its two
-// faces' normals differ by more than ~75 degrees (dot < 0.26); pieces never exceed 63
-// faces, and models with a larger piece carry no block at all.
+// Retail rule (measured over mp_common): an edge gets a bevel plane only when its two
+// faces' normals differ by more than ~75 degrees (dot < 0.26). Edges index their side
+// planes and vertices with single bytes, so a piece may have at most 255 planes (faces
+// plus bevels) and 255 vertices; a model with a larger piece carries no block. Retail
+// pieces reach 82 faces / 99 planes (single-player rocks).
 constexpr double kBevelDot = 0.26;
-constexpr int kMaxBrushFaces = 63;
+constexpr int kMaxBrushIndex = 255;
 
 std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int& edges) {
     struct Face {
@@ -854,8 +856,9 @@ void BuildCollisionModel(BuildContext& ctx) {
             for (auto& h : s.pieces) {
                 int faces, bevels, edges;
                 auto blob = BuildBrushPiece(h, faces, bevels, edges);
-                if (h.verts.size() > 255 || faces > kMaxBrushFaces || edges > 255) {
-                    Verbose("collision piece with %d faces: map collision block omitted (retail limit %d)", faces, kMaxBrushFaces);
+                if (static_cast<int>(h.verts.size()) > kMaxBrushIndex || faces + bevels > kMaxBrushIndex) {
+                    Verbose("collision piece with %d planes and %d vertices: map collision block omitted (limit %d)",
+                            faces + bevels, static_cast<int>(h.verts.size()), kMaxBrushIndex);
                     ok = false;
                 }
                 blobs.push_back(std::move(blob));

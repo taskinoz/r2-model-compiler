@@ -691,12 +691,6 @@ std::vector<uint8_t> MdlWriter::Run() {
     WriteKeyValues();
     WriteLinearBones();
     WritePerTri();
-    // bone followers
-    if (!m_.boneFollowers.empty()) {
-        HdrHere(H_BONEFOLLOWEROFFSET);
-        Hdr(H_BONEFOLLOWERCOUNT, static_cast<int>(m_.boneFollowers.size()));
-        for (int bf : m_.boneFollowers) b_.I32(bf);
-    }
     st_.Write(b_);
     b_.Align(4);
 
@@ -722,7 +716,12 @@ std::vector<uint8_t> MdlWriter::Run() {
         b_.Append(m_.physics.collisionBlock);
         Hdr(H_STATICCOLLISIONCOUNT, m_.physics.staticCollisionCount);
     }
-    if (m_.boneFollowers.empty()) HdrHere(H_BONEFOLLOWEROFFSET);
+    // bone followers: int32 bone indices after the collision block, as in retail
+    HdrHere(H_BONEFOLLOWEROFFSET);
+    if (!m_.boneFollowers.empty()) {
+        Hdr(H_BONEFOLLOWERCOUNT, static_cast<int>(m_.boneFollowers.size()));
+        for (int bf : m_.boneFollowers) b_.I32(bf);
+    }
     bool hasMesh = false;
     for (auto& bp : m_.bodyParts)
         for (auto& md : bp.models)

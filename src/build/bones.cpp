@@ -228,6 +228,7 @@ void BuildContext::BuildBones() {
         }
         for (auto& p : qc.uiPanels)
             for (auto& name : p.parents) keep(name);
+        for (auto& name : qc.boneFollowers) keep(name);
         for (auto& sa : qc.screenAlign)
             for (size_t j = 0; j < s.bones.size(); j++)
                 if (IEquals(sa.first, s.bones[j].name)) s.boneflags[j] |= sa.second;
