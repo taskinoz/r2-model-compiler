@@ -29,9 +29,9 @@ limitations.
   renders and ragdolls. The rebuilt prowler matches retail in pose (within 0.002
   units) and root motion (origin within 0.013 units over 13,867 units of travel);
   rebuilt drone_frag matches retail's scale-driven head lights, which a control
-  without scale misses by 21-23 units. Quaternion-interpolation and aim-at procedural
-  bones animate on the client (screenshots); the server's attachment queries ignore
-  procedural bones. A rebuilt R-201 viewmodel whose ammo-counter panel was renamed
+  without scale misses by 21-23 units. Quaternion-interpolation, aim-at and
+  axis-interpolation procedural bones animate on the client (screenshots); the
+  server's attachment queries ignore procedural bones. A rebuilt R-201 viewmodel whose ammo-counter panel was renamed
   (`models/r2c_test/My_Counter_Panel`, looked up from a weapon script in lower case)
   shows the counter, through the compiler's derived panel hash.
 - All 35 retail models with UI panels (163 panels) round-trip with panel blocks
@@ -42,8 +42,8 @@ limitations.
 ## Reports
 
 - test-output/release-corpus9/results.json: current full run with the release build.
-- test-output/prowler-ingame, scale-ingame, proc-ingame, ui-ingame: in-game pose, root-motion,
-  scale, procedural-bone and UI panel evidence.
+- test-output/prowler-ingame, scale-ingame, proc-ingame, axis-ingame, ui-ingame: in-game
+  pose, root-motion, scale, procedural-bone and UI panel evidence.
 - test-output/ui-corpus2: round trip of the 35 retail models with UI panels.
 - test-output/corpus-heading, corpus-euler: frame-movement yaw A/B runs.
 - Earlier runs (release-corpus2-8, corpus-v2/coll/final/fixed) used older comparisons;
@@ -66,8 +66,7 @@ parent flag propagation limited to "used by" bits; `ikfixup`; UI panel meshes
 
 ## Remaining parity work
 
-Axis-interpolation bones are compiled but unverified
-in game. `ikfixup` is compiled and covered by a regression test only (it is baked into
+`ikfixup` is compiled and covered by a regression test only (it is baked into
 animations, so retail data cannot confirm Respawn's exact behaviour).
 The retail yaw split between the frame-movement track and the root bone cannot be
 recovered from exported SMDs, and hull reconstruction differs by a face or vertex

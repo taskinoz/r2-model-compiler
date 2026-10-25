@@ -116,7 +116,10 @@ retail blends are not evenly spaced. A named `$animation`'s own options (such as
 Procedural bones: `$jigglebone` blocks, and studiomdl's `$proceduralbones` files: a
 `.vrd` file (`<helper>`/`<display>`/`<basepos>`/`<trigger>` quaternion-interpolation
 bones and `<aimconstraint>` aim-at-bone/attachment bones) or a `.txt` axis-interpolation
-file (`version 1` / `proceduralbones` / `bone ... axis` lines). The bones they drive
+file: `version 1`, `proceduralbones`, then per bone
+`bone "bone" "parent" "control" "controlparent" <axis 1-3>`, `basepos x y z` and six
+`axis <0-5> x y z roll pitch yaw` poses (+X, -X, +Y, -Y, +Z, -Z of the control bone's
+chosen axis, as studiomdl reads them). The bones they drive
 are kept even without vertices. Titanfall 2 evaluates these on the client (rendering);
 server-side attachment queries do not see them.
 
