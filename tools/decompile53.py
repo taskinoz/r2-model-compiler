@@ -290,10 +290,14 @@ def matrix_quaternion(m):
     return ((m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s)
 
 
-def write_dmx_mesh(path, bones, skeleton, polygons, material='phys'):
+def write_dmx_mesh(path, bones, skeleton, polygons, material='phys', pieces=None, loose=()):
     """A keyvalues2 DMX (model format 22) holding a skeleton and one mesh made of
     polygons. skeleton: per bone (pos, RadianEuler rot), parent relative. polygons: lists
-    of (pos, normal, [(bone, weight)]) corners; each corner is weighted to one bone."""
+    of (pos, normal, [(bone, weight)]) corners; each corner is weighted to one bone.
+    pieces: an id per polygon; corners at the same position within a piece share one
+    vertex, so each piece imports as a connected mesh (default: one piece).
+    loose: (pos, [(bone, weight)], piece) points no polygon uses, written as loose
+    vertices (retail collision pieces keep points such as cylinder-cap centres)."""
     rng = random.Random(os.path.basename(path))  # stable element ids for identical exports
     ids = (uuid.UUID(int=rng.getrandbits(128)) for _ in iter(int, 1))
     q = lambda s: '"%s"' % s
@@ -315,16 +319,29 @@ def write_dmx_mesh(path, bones, skeleton, polygons, material='phys'):
                 '"children" "element_array"\n[\n%s\n]\n}' % (
                     q(joint_ids[i]), q(bones[i]['name']), transform(bones[i]['name'], pos, matrix_quaternion(angle_matrix(rot))), kids))
 
-    positions, normals, weights, indices, faces = [], [], [], [], []
-    for poly in polygons:
+    positions, weights, indices = [], [], []   # per shared vertex
+    normals, pos_index, faces = [], [], []      # per polygon corner (loop)
+    shared = {}
+    for k, poly in enumerate(polygons):
+        piece = pieces[k] if pieces else 0
         for pos, nrm, wts in poly:
-            faces.append(len(positions))
-            positions.append(pos)
+            key = (piece, tuple(pos))
+            if key not in shared:
+                shared[key] = len(positions)
+                positions.append(pos)
+                weights.append(wts[0][1])
+                indices.append(wts[0][0])
+            faces.append(len(normals))
+            pos_index.append(shared[key])
             normals.append(nrm)
+        faces.append(-1)
+    for pos, wts, piece in loose:
+        if (piece, tuple(pos)) not in shared:
+            shared[(piece, tuple(pos))] = len(positions)
+            positions.append(pos)
             weights.append(wts[0][1])
             indices.append(wts[0][0])
-        faces.append(-1)
-    loops = [str(i) for i in range(len(positions))]
+    loops = [str(i) for i in range(len(normals))]
     arr = lambda kind, items: '"%s" [%s]' % (kind, ', '.join(items))
     mesh_id, vd_id, dag_id, model_id = (str(next(ids)) for _ in range(4))
     vertex_data = ('"DmeVertexData"\n{\n"id" "elementid" %s\n"name" "string" "bind"\n'
@@ -332,15 +349,16 @@ def write_dmx_mesh(path, bones, skeleton, polygons, material='phys'):
                    '"jointCount" "int" "1"\n'
                    '"position$0" %s\n"position$0Indices" %s\n"normal$0" %s\n"normal$0Indices" %s\n'
                    '"blendweights$0" %s\n"blendindices$0" %s\n}') % (
-        q(vd_id), arr('vector3_array', [vec(p) for p in positions]), arr('int_array', [q(i) for i in loops]),
+        q(vd_id), arr('vector3_array', [vec(p) for p in positions]), arr('int_array', [q(str(i)) for i in pos_index]),
         arr('vector3_array', [vec(n) for n in normals]), arr('int_array', [q(i) for i in loops]),
         arr('float_array', [q(fmt(w)) for w in weights]), arr('int_array', [q(str(i)) for i in indices]))
-    dag = ('"DmeDag"\n{\n"id" "elementid" %s\n"name" "string" "physics"\n"shape" "DmeMesh"\n{\n'
-           '"id" "elementid" %s\n"name" "string" "physics"\n"currentState" "element" %s\n'
+    mesh_name = os.path.splitext(os.path.basename(path))[0]
+    dag = ('"DmeDag"\n{\n"id" "elementid" %s\n"name" "string" %s\n"shape" "DmeMesh"\n{\n'
+           '"id" "elementid" %s\n"name" "string" %s\n"currentState" "element" %s\n'
            '"baseStates" "element_array" ["element" %s]\n"faceSets" "element_array"\n[\n"DmeFaceSet"\n{\n'
            '"id" "elementid" %s\n"name" "string" %s\n"material" "DmeMaterial"\n{\n"id" "elementid" %s\n'
            '"name" "string" %s\n"mtlName" "string" %s\n}\n"faces" %s\n}\n]\n}\n"transform" %s\n}') % (
-        q(dag_id), q(mesh_id), q(vd_id), q(vd_id), q(next(ids)), q(material), q(next(ids)), q(material), q(material),
+        q(dag_id), q(mesh_name), q(mesh_id), q(mesh_name), q(vd_id), q(vd_id), q(next(ids)), q(material), q(next(ids)), q(material), q(material),
         arr('int_array', [q(str(i)) for i in faces]), transform('physics', (0, 0, 0), (0, 0, 0, 1)))
     roots = ',\n'.join([joint(r) for r in children[-1]] + ['"element" %s' % q(dag_id)])
     model = ('"DmeModel"\n{\n"id" "elementid" %s\n"name" "string" "physics"\n"children" "element_array"\n[\n%s\n]\n'
@@ -1113,6 +1131,9 @@ def decompile(path, outdir):
         block = collision_block_faces(d, h, bones)
         unused_entries = list(range(len(block)))
         polygons = []
+        polygon_pieces = []
+        loose_points = []
+        piece_id = 0
         all_matched = bool(block)
         for si, s in enumerate(p['solids']):
             pts = [phylib.ivp_to_hl(q[:3]) for q in s['points']]
@@ -1159,16 +1180,21 @@ def decompile(path, outdir):
                     continue
                 unused_entries.remove(match)
                 verts, faces = block[match]
+                # one normal per piece (as for the SMD path): the compiler separates
+                # pieces by position and normal, so pieces that touch stay apart
+                placed = [corner(v) for v in verts]
                 for loop in faces:
-                    poly = []
-                    for vi in loop:
-                        pt, normal = corner(verts[vi])
-                        poly.append((pt, normal, [(bone, 1.0)]))
-                    polygons.append(poly)
+                    polygons.append([(placed[vi][0], placed[vi][1], [(bone, 1.0)]) for vi in loop])
+                    polygon_pieces.append(piece_id)
+                # points on the piece that no face uses (e.g. a cylinder cap's centre)
+                used = {vi for loop in faces for vi in loop}
+                loose_points.extend((placed[vi][0], [(bone, 1.0)], piece_id) for vi in range(len(verts)) if vi not in used)
+                piece_id += 1
         skel = [[(b['pos'], b['rot']) for b in bones]] if not static else [[((0, 0, 0), (0, 0, 0)) for b in bones]]
         if all_matched:
             physics_file = base + '_physics.dmx'
-            write_dmx_mesh(os.path.join(outdir, physics_file), bones, skel[0], polygons)
+            write_dmx_mesh(os.path.join(outdir, physics_file), bones, skel[0], polygons, pieces=polygon_pieces,
+                           loose=loose_points)
         else:
             physics_file = base + '_physics.smd'
             write_smd(os.path.join(outdir, physics_file), bones, skel, tris)

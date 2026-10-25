@@ -29,6 +29,9 @@ struct Hull {
     std::vector<DVec3> verts;                  // only points on the hull
     std::vector<std::array<int, 3>> tris;      // CCW seen from outside
     std::vector<int> triPolygon;               // source polygon per triangle (-1 = none); may be empty
+    // map-collision faces built straight from the source polygons (vertex loops,
+    // counter-clockwise seen from outside) when they cover the hull; empty otherwise
+    std::vector<std::vector<int>> brushLoops;
     bool valid = false;
 };
 

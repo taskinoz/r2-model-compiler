@@ -5,11 +5,10 @@ animated models, including Respawn root motion (frame movement), bone scale
 animation, IK rules, sequence weight lists, procedural bones, bone followers and UI
 panel meshes. It is not a claim of complete Valve/Respawn feature parity.
 
-Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime),
-released as v0.3.0. SHA-256:
-`a6370348bc3e25c54d02780dbffb21679204a18465bfac312ff67e80423fc457`.
-(v0.2.0 shipped `67fb263a...` and v0.1.0 `90c58cc2...`; the changes since v0.2.0 are
-under "Collision faces from source polygons".)
+Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
+SHA-256: `e94ee0a3faf39b822f8a4305a0a9bd5dfb451767bb8a2d6173442c48a25de9b7`.
+(v0.3.0 shipped `a6370348...`, v0.2.0 `67fb263a...` and v0.1.0 `90c58cc2...`; the
+changes since v0.2.0 are under "Collision faces from source polygons".)
 
 Paths under `test-output/` name the local report folders the tools produced (JSON
 results, logs and screenshots). They are not part of the repository; the commands
@@ -17,7 +16,7 @@ below regenerate them from your own copy of the game.
 
 ## Automated checks
 
-- Both CTest groups pass: the C++ collision hull suite and twenty Python compiler/
+- Both CTest groups pass: the C++ collision hull suite and twenty-one Python compiler/
   corpus-runner regression tests (including bone scale, IK rules, procedural bones,
   UI panels, bone followers with per-joint concave collision, DMX UV2/vertex
   colour, IK ranges that studiomdl overwrote in order, DMX polygons as map-collision
@@ -35,14 +34,13 @@ below regenerate them from your own copy of the game.
 ## Retail corpus
 
 All **602/602** retail `mp_common` MDL v53 models decompiled and compiled without a
-compile failure or decompiler exception. **587/602** match every compared field.
+compile failure or decompiler exception. **591/602** match every compared field.
 
 Reports:
 
-- `test-output/release-corpus14/results.json` and `release-corpus14.log`: full run
-  (fresh decompile and compile) with the executable above. Compared with v0.2.0's run
-  (`release-corpus12`, 559/602), 29 models now match and one (`energy_ring_edge`) newly
-  differs by one collision vertex.
+- `test-output/release-corpus17/results.json` and `release-corpus17.log`: full run
+  (fresh decompile and compile) with the executable above. No collision differences
+  remain; v0.2.0 matched 559/602 and v0.3.0 587/602.
 - `test-output/ui-corpus2`: all 35 retail models with UI panels (163 panels), fresh
   decompile and compile with the executable above: 35/35 match, and every panel block
   (header hash, bones, vertices, faces, winding and bounds) is byte-identical to retail.
@@ -58,7 +56,7 @@ python tools\roundtrip.py --jobs 8 --compiler build\r2studiomdl.exe --out test-o
 To recompile existing, unedited exports with another build:
 
 ```powershell
-python tools\recheck_corpus.py --from-report test-output\release-corpus14\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
+python tools\recheck_corpus.py --from-report test-output\release-corpus17\results.json --compiler build\r2studiomdl.exe --jobs 8 --out test-output\recheck
 ```
 
 The recheck verifies input model size/timestamps and the exporter/comparison tool
@@ -77,7 +75,7 @@ each bone's collision reference. Entry order within the collision block is not
 compared: retail jointed models order it by neither bone nor PHY solid. Animation
 samples are first, middle and last frames. This is not a byte-for-byte comparison.
 
-The 15 remaining differences are retained in the report:
+The 11 remaining differences are retained in the report:
 
 | Models | Difference |
 | --- | --- |
@@ -88,7 +86,6 @@ The 15 remaining differences are retained in the report:
 | `straton_anims` | 0.69 inches |
 | `widow` | 0.92 inches |
 | `titan_medium_sp_core`, `titan_heavy_sp_core`, `titan_medium_mp_reactions`, `titan_medium_mp_core` | IK footstep error samples differ by 0.27-0.50 (about 0.3-0.6 degrees at the comparison's 50-unit lever) |
-| `arc_grenade_projectile`, `burn_card`, `energy_ring_edge`, `marvin` | One collision piece (four in `marvin`) differs by one or two vertices, bevels or edges; see "Collision faces from source polygons" |
 
 The animation differences come from bones 6,000-54,000 units from the model origin
 and from how yaw is split between the frame-movement track and the root bone. Retail
@@ -103,8 +100,8 @@ re-quantization: errors are recomputed from the decoded poses. None is claimed l
 The 13 single-player map VPKs (`englishclient_sp_*.bsp.pak000_dir.vpk`) hold 11,709
 models. 4,997 are byte-identical to `mp_common` models; the other **3,422** unique v53
 models were decompiled and compiled with the executable above. There were no compile
-failures or decompiler exceptions, and **3,384/3,422** match every compared field
-(`test-output/sp-corpus5`; v0.2.0 matched 3,223). No single-player model uses flexes,
+failures or decompiler exceptions, and **3,411/3,422** match every compared field
+(`test-output/sp-corpus8`; v0.2.0 matched 3,223 and v0.3.0 3,384). No single-player model uses flexes,
 eyeballs or vertex animation, and none sets the UV2 flag.
 
 This corpus found problems the multiplayer set does not exercise. They are fixed in
@@ -129,11 +126,10 @@ this build:
   a rewritten start from a rewritten end. This took `titan_buddy_sp_core` from 59.17
   to an ordinary 0.72 residual.
 
-The 38 remaining differences:
+The 11 remaining differences:
 
 | Models | Difference |
 | --- | --- |
-| 27 models (`marvin_*`, cans, pipes, vents, two rocks, ...) | One or two collision pieces differ by a few vertices, faces or edges; see "Collision faces from source polygons" |
 | `trinity`, `trinity_small`, `trinity_xsmall` | Retail has no map-collision block but stores a count of -1 and bone references of 0xFFFF; `$nomapcollision` reproduces the missing block, not those values |
 | `titan_buddy_mp_core` | One attachment rule's error stream carries a constant rotation offset of about 60 degrees in every frame, while the rule's own orientation matches; the sibling animation matches. Treated as stale retail data |
 | `titan_buddy_sp_core`, `titan_buddy_scripted_s2s` | IK footstep error samples off by 0.72 and 0.27 (re-quantization over animations of up to 600 frames) |
@@ -161,13 +157,29 @@ Since v0.2.0 the compiler takes faces from the source polygons:
   from the block, whose vertices are exactly the PHY points.
 - `$nomapcollision` reproduces the six legacy retail models built without the block.
 
-Collision differences fell from 31 to 4 multiplayer models and from 185 to 27
-single-player models. Most of the rest are one or two vertices: retail keeps points
-lying on a hull edge as vertices, while the hull builder drops them. A few are
-triangles that lie in two coplanar polygons at once, where the choice is ambiguous.
+Since v0.3.0 the faces are built from the polygon outlines themselves, not from
+triangles tagged with a polygon:
+- **Per piece:** each convex piece uses only its own polygons.
+- **Faces and edges:** a face's plane comes from its loop, and an edge is a loop edge
+  shared with the face whose loop runs the other way.
+- **T-junctions:** a corner partway along a neighbour's edge splits that edge.
+- **Self-touching faces:** a face whose outline passes a vertex twice (three
+  `sewer_vent_large` models) pairs its edges by shared corners.
+- **Surface points:** points lying on a piece's surface without being corners stay as
+  hull vertices, in the PHY triangles and the block. Examples are cylinder-cap centres
+  and edge midpoints; 46 retail pieces list such points. The decompiler writes the
+  ones no face uses as loose DMX vertices.
 
-The test model for both is a box whose top is a quad bent by 0.2 units. As DMX quads
-it gives 6 faces; as SMD triangles it gives 7.
+Collision differences fell from 31 multiplayer and 185 single-player models (v0.2.0)
+to none, apart from the three `trinity` models' stored count of -1.
+
+Regression tests cover:
+- a box whose top quad is bent by 0.2 units (6 faces as DMX polygons, 7 as SMD
+  triangles);
+- a box with a split top, an edge midpoint, a loose point and a T-junction.
+
+The decompiled physics DMX imports into Blender (Blender Source Tools) as closed,
+connected meshes, one per piece, mostly quads, with loose points kept.
 
 ## In-game checks (Northstar)
 

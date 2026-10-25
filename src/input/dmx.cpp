@@ -8,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <variant>
@@ -566,6 +567,7 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                 // a DmeDag listed in jointList (Source 2 layout) is only rigid when it has no weights
                 bool rigid = jointIndex.count(e) > 0 && !(jw && ji && jointCount > 0);
                 int rigidBone = rigid ? jointIndex[e] : 0;
+                std::set<int> usedPositions;
                 for (auto* fs : doc.Children(shape, "faceSets")) {
                     const Elem* mat = doc.Child(fs, "material");
                     std::string mtl = "default";
@@ -622,12 +624,15 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                     for (int idx : faces->ints) {
                         if (idx >= 0) {
                             poly.push_back(idx);
+                            if (idx < static_cast<int>(posIdx->ints.size())) usedPositions.insert(posIdx->ints[idx]);
                             continue;
                         }
                         // triangle fan; studiomdl's winding flip as for SMD (a, c, b). The fan
-                        // remembers its polygon (numbered by its first triangle), which
+                        // remembers its polygon, which
                         // becomes one map-collision face, as Respawn's Maya pipeline does.
-                        const int polygon = static_cast<int>(src->faces.size());
+                        // (Its own counter: a polygon of fewer than three corners adds no
+                        // triangles and must not hand its number to the next one.)
+                        const int polygon = src->polygonCount++;
                         for (size_t k = 1; k + 1 < poly.size(); k++) {
                             SrcFace face;
                             face.material = matIndex;
@@ -643,6 +648,25 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                         }
                         poly.clear();
                     }
+                }
+                // Loose vertices (positions no face uses) are kept as unreferenced source
+                // vertices: a collision mesh can carry points lying on a piece's surface,
+                // as retail convex pieces keep cylinder-cap centres.
+                const int positionCount = static_cast<int>(pos->floats.size() / 3);
+                for (int pi = 0; pi < positionCount; pi++) {
+                    if (usedPositions.count(pi)) continue;
+                    SrcVertex v;
+                    v.pos = Transform(here, Vec3Of(pos, pi));
+                    if (jw && ji && jointCount > 0 && !rigid) {
+                        for (int k = 0; k < jointCount; k++) {
+                            float wgt = jw->floats[pi * jointCount + k];
+                            int bi = ji->ints[pi * jointCount + k];
+                            if (wgt > 0 && bi >= 0 && bi < static_cast<int>(src->bones.size())) v.weights.push_back({bi, wgt});
+                        }
+                        BalanceWeights(v.weights, kMaxWeightsPerVertex);
+                    }
+                    if (v.weights.empty()) v.weights.push_back({rigidBone, 1.f});
+                    src->vertices.push_back(v);
                 }
             }
         }

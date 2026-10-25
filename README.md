@@ -36,9 +36,9 @@ IK rules, procedural bones and weapon UI panels.
   colours and a second UV set (from DMX).
 
 All 602 retail multiplayer models and 3,422 unique single-player models decompile and
-recompile with it. 587 and 3,384 of them match the original in every compared field.
-The remainder are documented: sub-inch animation re-quantization, a few collision pieces
-off by a vertex or two, and some retail data quirks. See [VALIDATION.md](VALIDATION.md) for the evidence and in-game checks.
+recompile with it. 591 and 3,411 of them match the original in every compared field,
+collision included. The remainder are documented: sub-inch animation re-quantization
+and some retail data quirks. See [VALIDATION.md](VALIDATION.md) for the evidence and in-game checks.
 
 ## Quick start
 
@@ -158,13 +158,18 @@ vertices. Respawn's faces are the polygons of the source collision mesh (Maya qu
 n-gons), not a planarity merge.
 
 - **DMX:** each polygon of a DMX collision mesh becomes one face, as Respawn's
-  pipeline does. A slightly bent quad stays one face.
+  pipeline does. A slightly bent quad stays one face. Where a polygon corner lies
+  partway along a neighbour's edge (a T-junction), that edge is split so the faces meet.
 - **SMD:** an SMD holds only triangles, so the compiler merges triangles that lie on
   one plane.
+- **Surface points:** points lying on a convex piece's surface without being corners
+  (an edge midpoint, the centre of a cylinder cap) stay as vertices, as in retail. In
+  DMX such a point can also be a loose vertex (one no face uses).
 
 To match retail collision, export the collision mesh from Blender or Maya as DMX with
 its quads intact. Decompiled models write their physics mesh as DMX for the same
-reason.
+reason. Each convex piece is one connected, closed mesh in that file; it imports into
+Blender with Blender Source Tools.
 
 `$nomapcollision` inside a `$collisionmodel`/`$collisionjoints` block writes the PHY
 data but no map-collision block. A few retail models are built this way.
@@ -271,8 +276,7 @@ collects the v53 format facts the compiler relies on.
 - Output targets Titanfall 2 v53 only. Titanfall 1 and Apex Legends model files are not
   inputs; the compiler reads QC/SMD/DMX.
 - The remaining retail differences are listed in VALIDATION.md. Some animations
-  differ by 0.28-0.92 inches after re-quantization, and a few collision pieces by one or
-  two vertices (retail keeps points lying on hull edges).
+  differ by 0.28-0.92 inches after re-quantization; the rest are retail data quirks.
 - Crowbar's command line is reproduced in a test, but its GUI has not been driven
   automatically.
 

@@ -51,7 +51,9 @@ keeps the executable as an artifact. Set `R2C_COMPILER` to test another executab
 - `tools/decompile53.py`: v53 `.mdl` to QC + SMD (+ `.vrd`/`.txt` procedural files),
   written so that the compiler can rebuild the model. When the model has a
   map-collision block, the physics mesh is written as a keyvalues2 DMX
-  (`write_dmx_mesh`) whose polygons are the block's faces, so the compiler rebuilds
+  (`write_dmx_mesh`) whose polygons are the block's faces, welded per convex piece so
+  each piece imports into Blender as a closed mesh (points no face uses become loose
+  vertices), so the compiler rebuilds
   retail's faces; legacy models without the block get `$nomapcollision`. `decompile(path, out_dir)`
   returns the QC path. It also exposes decoders: `decode_procedural`,
   `decode_ui_panels`, `decode_ik_rules`, `ui_panel_hash`, `write_smd`.

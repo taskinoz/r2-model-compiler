@@ -119,6 +119,47 @@ class CompilerRegressions(unittest.TestCase):
         second = self.compile(qc2.replace('"dmx_', '"decompiled/dmx_').replace('"anim_', '"decompiled/anim_'), 'second')
         self.assertEqual(roundtrip.compare(roundtrip.summary(self.work / 'dmx.mdl'), roundtrip.summary(second)), [])
 
+    def test_collision_keeps_surface_points_and_polygon_faces(self):
+        # Retail keeps points lying on a piece's surface (an edge midpoint, a cap centre)
+        # as vertices, and its faces are the source polygons even where they share a
+        # plane. Here the top is a triangle plus a quad meeting at an edge midpoint, and a
+        # loose vertex sits at the centre of the bottom.
+        bones = [{'name': 'root', 'parent': -1}]
+        p = [(0,0,0), (10,0,0), (10,10,0), (0,10,0), (0,0,10), (10,0,10), (10,10,10), (0,10,10), (5,0,10)]
+        polygons = [(0,3,2,1), (0,1,5,8,4), (1,2,6,5), (2,3,7,6), (3,0,4,7), (4,8,7), (8,5,6,7)]
+        up = (0, 0, 1)
+        dc.write_dmx_mesh(str(self.work / 'phys.dmx'), bones, [((0,0,0), (0,0,0))],
+                          [[(p[i], up, [(0, 1.0)]) for i in poly] for poly in polygons],
+                          loose=[((5, 5, 0), [(0, 1.0)], 0)])
+        tris = [('phys', [(p[i], up, (0,0), [(0, 1.0)]) for i in (poly[0], poly[k], poly[k + 1])])
+                for poly in polygons for k in range(1, len(poly) - 1)]
+        dc.write_smd(self.work / 'phys.smd', bones, [[((0,0,0), (0,0,0))]], tris)
+        dc.write_smd(self.work / 'body.smd', bones, [[((0,0,0), (0,0,0))]], cube((5,5,5),(0,0,1)))
+        counts = {}
+        for ext in ('dmx', 'smd'):
+            output = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n$sequence idle "body.smd"\n'
+                                  '$collisionmodel "phys.%s" { }\n' % ext, ext)
+            data = output.read_bytes()
+            header = mdl53.Model(data).hdr
+            fc, fb, ec, vc = struct.unpack_from('<4i', data, header['collisionOffset'])
+            counts[ext] = (fc, vc)
+        self.assertEqual(counts, {'dmx': (7, 10), 'smd': (6, 9)})
+        # a T-junction: the front face is a plain quad although the top's polygons meet at
+        # a point on its top edge; the edge is split so the faces still meet edge to edge
+        tee = [poly if poly != (0,1,5,8,4) else (0,1,5,4) for poly in polygons]
+        dc.write_dmx_mesh(str(self.work / 'tee.dmx'), bones, [((0,0,0), (0,0,0))],
+                          [[(p[i], up, [(0, 1.0)]) for i in poly] for poly in tee])
+        output = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n$sequence idle "body.smd"\n'
+                              '$collisionmodel "tee.dmx" { }\n', 'tee')
+        data = output.read_bytes()
+        header = mdl53.Model(data).hdr
+        fc, fb, ec, vc = struct.unpack_from('<4i', data, header['collisionOffset'])
+        self.assertEqual((fc, vc), (7, 9))
+        # the DMX shares one vertex per position, so the piece is a connected mesh
+        text = (self.work / 'phys.dmx').read_text()
+        positions = text.split('"position$0" "vector3_array" [')[1].split(']')[0].count('"')
+        self.assertEqual(positions // 2, 10)
+
     def test_nomapcollision_omits_the_block(self):
         (self.work / 'body.smd').write_text((ROOT / 'tests/box/box.smd').read_text())
         output = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n$sequence idle "body.smd"\n'

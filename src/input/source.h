@@ -57,6 +57,7 @@ struct Source {
     std::vector<std::string> materials;
     std::vector<SrcVertex> vertices;
     std::vector<SrcFace> faces;
+    int polygonCount = 0;  // DMX polygons read so far (ids for SrcFace::polygon)
     bool hasMesh() const { return !faces.empty(); }
     int FindBone(const std::string& n) const;
 };

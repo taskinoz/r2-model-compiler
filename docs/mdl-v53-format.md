@@ -209,7 +209,14 @@ example, a sequence may weight the root 0 although its animation stores root rec
   Exactly coplanar neighbours stay apart; slightly bent quads (up to 0.01 units off
   plane) stay one face. A planarity merge cannot reproduce this; keeping DMX polygons
   can.
-- Retail keeps points lying on a hull edge as vertices; a fresh hull drops them.
+- **Surface points:** a piece keeps source points lying on its surface without being
+  corners (cylinder-cap centres, edge midpoints). The PHY triangulates around them, and
+  the block lists them as vertices even when no face edge uses them (46 retail pieces).
+  A fresh convex hull drops them.
+- **Collinear corners and T-junctions:** a face loop can include a point along a
+  neighbour's edge; both faces then split that edge. A few retail faces touch
+  themselves (an outline passing a vertex twice), so two edges join the same pair of
+  faces.
 
 ## Open questions
 

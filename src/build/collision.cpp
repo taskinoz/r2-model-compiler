@@ -381,6 +381,8 @@ constexpr double kBevelDot = 0.26;
 constexpr int kMaxBrushIndex = 255;
 
 std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int& edges) {
+    const auto& tris = h.tris;
+    const auto& triPolygon = h.triPolygon;
     struct Face {
         DVec3 n;
         double d;
@@ -389,19 +391,19 @@ std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int
         DVec3 areaNormal;  // sum of the member triangles' cross products
     };
     std::vector<Face> fs;
-    std::vector<int> triFace(h.tris.size());
+    std::vector<int> triFace(tris.size());
     double scale = 0;
     for (auto& v : h.verts) scale = std::max(scale, DLen(v));
     double dEps = std::max(1e-3, scale * 1e-5);
     std::map<int, int> polygonFace;
-    for (size_t t = 0; t < h.tris.size(); t++) {
-        const DVec3 &a = h.verts[h.tris[t][0]], &b = h.verts[h.tris[t][1]], &c = h.verts[h.tris[t][2]];
+    for (size_t t = 0; t < tris.size(); t++) {
+        const DVec3 &a = h.verts[tris[t][0]], &b = h.verts[tris[t][1]], &c = h.verts[tris[t][2]];
         DVec3 cross = DCross(b - a, c - a);
         DVec3 n = cross;
         double l = DLen(n);
         if (l > 0) n = n * (1 / l);
         double d = DDot(n, a);
-        int polygon = t < h.triPolygon.size() ? h.triPolygon[t] : -1;
+        int polygon = t < triPolygon.size() ? triPolygon[t] : -1;
         int f = -1;
         if (polygon >= 0) {
             // one face per source polygon, even when slightly bent or coplanar with
@@ -432,12 +434,12 @@ std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int
         f.n = f.areaNormal * (1 / l);
         f.d = -1e300;
         for (int t : f.tris)
-            for (int c = 0; c < 3; c++) f.d = std::max(f.d, DDot(f.n, h.verts[h.tris[t][c]]));
+            for (int c = 0; c < 3; c++) f.d = std::max(f.d, DDot(f.n, h.verts[tris[t][c]]));
     }
     // directed edge -> face, boundary edges per face
     std::map<std::pair<int, int>, int> dirFace;
-    for (size_t t = 0; t < h.tris.size(); t++)
-        for (int e = 0; e < 3; e++) dirFace[{h.tris[t][e], h.tris[t][(e + 1) % 3]}] = triFace[t];
+    for (size_t t = 0; t < tris.size(); t++)
+        for (int e = 0; e < 3; e++) dirFace[{tris[t][e], tris[t][(e + 1) % 3]}] = triFace[t];
     struct Edge {
         int v0, v1, s0, s1;
     };
@@ -446,7 +448,7 @@ std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int
     for (size_t f = 0; f < fs.size(); f++)
         for (int t : fs[f].tris)
             for (int e = 0; e < 3; e++) {
-                int a = h.tris[t][e], b = h.tris[t][(e + 1) % 3];
+                int a = tris[t][e], b = tris[t][(e + 1) % 3];
                 int other = dirFace[{b, a}];
                 if (other == static_cast<int>(f)) continue;  // interior edge of a merged face
                 auto key = std::make_pair(std::min(a, b), std::max(a, b));
@@ -454,6 +456,46 @@ std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int
                 done.insert(key);
                 es.push_back({a, b, static_cast<int>(f), other});
             }
+    if (!h.brushLoops.empty()) {
+        // faces are the source polygons: each loop's plane, and the loop edges shared
+        // with the face whose loop runs the other way (a polygon's collinear points
+        // stay on its edges, as retail's do)
+        fs.clear();
+        es.clear();
+        done.clear();
+        std::map<std::pair<int, int>, int> loopFace;
+        for (size_t f = 0; f < h.brushLoops.size(); f++) {
+            const auto& loop = h.brushLoops[f];
+            DVec3 n;
+            for (size_t k = 0; k < loop.size(); k++) {
+                const DVec3 &p = h.verts[loop[k]], &q = h.verts[loop[(k + 1) % loop.size()]];
+                n = n + DVec3((p.y - q.y) * (p.z + q.z), (p.z - q.z) * (p.x + q.x), (p.x - q.x) * (p.y + q.y));
+            }
+            double l = DLen(n);
+            if (l > 0) n = n * (1 / l);
+            double d = -1e300;
+            for (int v : loop) d = std::max(d, DDot(n, h.verts[v]));
+            fs.push_back({n, d, {}, static_cast<int>(f), DVec3()});
+            for (size_t k = 0; k < loop.size(); k++) loopFace[{loop[k], loop[(k + 1) % loop.size()]}] = static_cast<int>(f);
+        }
+        for (size_t f = 0; f < h.brushLoops.size(); f++) {
+            const auto& loop = h.brushLoops[f];
+            for (size_t k = 0; k < loop.size(); k++) {
+                int a = loop[k], b = loop[(k + 1) % loop.size()];
+                auto key = std::make_pair(std::min(a, b), std::max(a, b));
+                if (done.count(key)) continue;
+                done.insert(key);
+                auto other = loopFace.find({b, a});
+                int side = other != loopFace.end() ? other->second : -1;
+                if (side < 0)  // no opposite edge: the other face that has both corners
+                    for (size_t g = 0; g < h.brushLoops.size() && side < 0; g++)
+                        if (g != f && std::count(h.brushLoops[g].begin(), h.brushLoops[g].end(), a) &&
+                            std::count(h.brushLoops[g].begin(), h.brushLoops[g].end(), b))
+                            side = static_cast<int>(g);
+                es.push_back({a, b, static_cast<int>(f), side >= 0 ? side : static_cast<int>(f)});
+            }
+        }
+    }
     faces = static_cast<int>(fs.size());
     edges = static_cast<int>(es.size());
     bevels = 0;
@@ -533,6 +575,72 @@ bool MakeHull(const std::vector<Vec3>& pts, Hull& out) {
     return out.valid;
 }
 
+// Points that lie on a hull's surface without being corners (a cylinder cap's centre,
+// a point on an edge) stay as hull vertices, splitting the triangle (or the two
+// triangles sharing the edge) they lie on. Retail PHY triangulates around such points
+// and lists them in the map-collision piece. Returns how many were inserted.
+int InsertSurfacePoints(Hull& h, const std::vector<Vec3>& pts) {
+    double scale = 1;
+    for (auto& v : h.verts) scale = std::max(scale, DLen(v));
+    const double eps = std::max(1e-3, scale * 1e-6);
+    int inserted = 0;
+    for (auto& pf : pts) {
+        DVec3 p(pf);
+        bool corner = false;
+        for (auto& v : h.verts)
+            if (DLen(v - p) < eps) {
+                corner = true;
+                break;
+            }
+        if (corner) continue;
+        for (size_t t = 0; t < h.tris.size(); t++) {
+            int ia = h.tris[t][0], ib = h.tris[t][1], ic = h.tris[t][2];
+            const DVec3 a = h.verts[ia], b = h.verts[ib], c = h.verts[ic];
+            DVec3 n = DCross(b - a, c - a);
+            double area = DLen(n);
+            if (area <= 0) continue;
+            n = n * (1 / area);
+            if (std::fabs(DDot(n, p - a)) > eps) continue;
+            // signed distance of p inside each edge (positive = inside)
+            const DVec3* ends[3][2] = {{&a, &b}, {&b, &c}, {&c, &a}};
+            double inside[3];
+            for (int e = 0; e < 3; e++) {
+                DVec3 edge = *ends[e][1] - *ends[e][0];
+                double len = DLen(edge);
+                inside[e] = len > 0 ? DDot(DCross(edge, p - *ends[e][0]), n) / len : -1;
+            }
+            if (inside[0] < -eps || inside[1] < -eps || inside[2] < -eps) continue;
+            int ip = static_cast<int>(h.verts.size());
+            h.verts.push_back(p);
+            int onEdge = -1;
+            for (int e = 0; e < 3; e++)
+                if (inside[e] < eps) onEdge = e;
+            if (onEdge < 0) {
+                h.tris[t] = {ia, ib, ip};
+                h.tris.push_back({ib, ic, ip});
+                h.tris.push_back({ic, ia, ip});
+            } else {
+                int u = h.tris[t][onEdge], v = h.tris[t][(onEdge + 1) % 3], w = h.tris[t][(onEdge + 2) % 3];
+                h.tris[t] = {u, ip, w};
+                h.tris.push_back({ip, v, w});
+                for (size_t t2 = 0; t2 < h.tris.size(); t2++) {
+                    for (int e = 0; e < 3; e++)
+                        if (h.tris[t2][e] == v && h.tris[t2][(e + 1) % 3] == u) {
+                            int x = h.tris[t2][(e + 2) % 3];
+                            h.tris[t2] = {v, ip, x};
+                            h.tris.push_back({ip, u, x});
+                            t2 = h.tris.size();
+                            break;
+                        }
+                }
+            }
+            inserted++;
+            break;
+        }
+    }
+    return inserted;
+}
+
 // Source polygons touching each point, keyed by exact position (hull vertices are
 // copies of the input points), and each polygon's points.
 using PointKey = std::array<double, 3>;
@@ -552,8 +660,106 @@ void AddPolygonPoint(PointPolygons& map, const Vec3& p, int polygon) {
 // Tags each hull triangle with the source polygon all three of its corners belong to,
 // so the map-collision face keeps the modelled polygon (retail faces follow the
 // source mesh's quads and n-gons, not a planarity test).
+// When the source polygons whose points are all hull vertices cover the hull's surface,
+// the map-collision faces are built from those polygons directly: retail faces are the
+// modelled polygons, even where neighbours meet at a slight crease the hull's own
+// triangulation cuts differently. The hull triangles stay as they are for the PHY.
+void BuildPolygonBrush(Hull& h, const PointPolygons& index) {
+    auto vertexOf = [&](const PointKey& k) {
+        DVec3 p(k[0], k[1], k[2]);
+        int best = -1;
+        double bestDist = 1e-3 * std::max(1.0, DLen(p) * 1e-3);
+        for (size_t i = 0; i < h.verts.size(); i++) {
+            double dist = DLen(h.verts[i] - p);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = static_cast<int>(i);
+            }
+        }
+        return best;
+    };
+    DVec3 centre;
+    for (auto& v : h.verts) centre = centre + v;
+    centre = centre * (1.0 / h.verts.size());
+    double hullArea = 0;
+    for (auto& t : h.tris) hullArea += DLen(DCross(h.verts[t[1]] - h.verts[t[0]], h.verts[t[2]] - h.verts[t[0]])) / 2;
+    std::set<int> candidates;
+    for (auto& v : h.verts) {
+        auto it = index.byPoint.find({v.x, v.y, v.z});
+        if (it != index.byPoint.end()) candidates.insert(it->second.begin(), it->second.end());
+    }
+    std::vector<std::vector<int>> loops;
+    double area = 0;
+    for (int p : candidates) {
+        std::vector<int> loop;
+        for (auto& k : index.points.at(p)) {
+            int v = vertexOf(k);
+            if (v < 0) {
+                loop.clear();
+                break;
+            }
+            loop.push_back(v);
+        }
+        if (loop.size() < 3) continue;
+        DVec3 c;
+        for (int v : loop) c = c + h.verts[v];
+        c = c * (1.0 / loop.size());
+        DVec3 out = c - centre;  // a convex hull's face looks away from its centre
+        double ol = DLen(out);
+        if (ol <= 0) continue;
+        out = out * (1 / ol);
+        DVec3 u = DCross(out, std::fabs(out.x) < 0.9 ? DVec3(1, 0, 0) : DVec3(0, 1, 0));
+        DVec3 w = DCross(out, u);
+        std::sort(loop.begin(), loop.end(), [&](int a, int b) {
+            DVec3 da = h.verts[a] - c, db = h.verts[b] - c;
+            return std::atan2(DDot(da, w), DDot(da, u)) < std::atan2(DDot(db, w), DDot(db, u));
+        });
+        for (size_t k = 1; k + 1 < loop.size(); k++)
+            area += DLen(DCross(h.verts[loop[k]] - h.verts[loop[0]], h.verts[loop[k + 1]] - h.verts[loop[0]])) / 2;
+        loops.push_back(loop);
+    }
+    if (loops.empty() || std::fabs(area - hullArea) > 1e-3 * std::max(1.0, hullArea)) {
+        Verbose("collision piece: source polygons cover %.4f of %.4f surface; faces follow the hull", area, hullArea);
+        return;
+    }
+    // T-junctions: a polygon corner lying partway along a neighbour's edge splits that
+    // edge, so the loops meet edge to edge
+    std::set<int> corners;
+    for (auto& loop : loops) corners.insert(loop.begin(), loop.end());
+    const double tEps = 1e-3 * std::max(1.0, std::sqrt(hullArea) * 1e-3);
+    for (auto& loop : loops)
+        for (size_t k = 0; k < loop.size(); k++) {
+            const DVec3 &a = h.verts[loop[k]], &b = h.verts[loop[(k + 1) % loop.size()]];
+            DVec3 ab = b - a;
+            double len = DLen(ab);
+            if (len <= 0) continue;
+            int split = -1;
+            double nearest = len;
+            for (int v : corners) {
+                if (v == loop[k] || v == loop[(k + 1) % loop.size()]) continue;
+                double t = DDot(h.verts[v] - a, ab) / (len * len);
+                if (t <= 0 || t >= 1 || DLen(DCross(ab, h.verts[v] - a)) / len > tEps) continue;
+                if (t * len < nearest) {
+                    nearest = t * len;
+                    split = v;
+                }
+            }
+            if (split >= 0) loop.insert(loop.begin() + static_cast<long>(k) + 1, split);  // re-checks the shorter edge next
+        }
+    // every loop edge must now meet the opposite edge of a neighbouring polygon
+    std::set<std::pair<int, int>> directed;
+    for (auto& loop : loops)
+        for (size_t k = 0; k < loop.size(); k++) directed.insert({loop[k], loop[(k + 1) % loop.size()]});
+    int open = 0;
+    for (auto& e : directed)
+        if (!directed.count({e.second, e.first})) open++;
+    if (open) Verbose("collision piece: %d polygon edges have no opposite edge (a face that touches itself)", open);
+    h.brushLoops = std::move(loops);
+}
+
 void TagPolygons(Hull& h, const PointPolygons& index) {
     if (index.empty()) return;
+    BuildPolygonBrush(h, index);
     const auto& map = index.byPoint;
     // hull welding can move a vertex slightly off its input point
     auto lookup = [&](const DVec3& v) -> const std::set<int>* {
@@ -693,6 +899,7 @@ void BuildCollisionModel(BuildContext& ctx) {
         PointPolygons polygons;
         for (auto& f : inst->faces)
             for (int c = 0; c < 3; c++) AddPolygonPoint(polygons, world[f.v[c]], f.polygon);
+        std::vector<PointPolygons> pieceIndex;  // per piece: its own source polygons
         Solid s;
         s.name = FileBase(qc.file);
         s.bone = 0;
@@ -709,20 +916,41 @@ void BuildCollisionModel(BuildContext& ctx) {
                     Warn("collision piece with %d vertices is flat; skipped (check the collision mesh)", static_cast<int>(c.size()));
                     continue;
                 }
+                InsertSurfacePoints(h, pts);
                 s.pieces.push_back(h);
+                // the piece's own polygons: faces whose corners are all in it (pieces that
+                // touch flush share positions, so a per-solid lookup would mix them)
+                std::set<int> members(c.begin(), c.end());
+                PointPolygons own;
+                for (auto& f : inst->faces)
+                    if (members.count(f.v[0]) && members.count(f.v[1]) && members.count(f.v[2]))
+                        for (int k = 0; k < 3; k++) AddPolygonPoint(own, world[f.v[k]], f.polygon);
+                pieceIndex.push_back(own);
             }
             if (static_cast<int>(s.pieces.size()) > qc.maxConvexPieces) {
                 Warn("collision model has %d convex pieces (limit %d): using a single convex hull", static_cast<int>(s.pieces.size()),
                      qc.maxConvexPieces);
                 s.pieces.clear();
+                pieceIndex.clear();
             }
         }
         if (s.pieces.empty()) {
             Hull h;
             if (!MakeHull(world, h)) Fatal("collision model %s is flat or degenerate", qc.file.c_str());
+            InsertSurfacePoints(h, world);
             s.pieces.push_back(h);
+            pieceIndex = {polygons};
+        } else {
+            // loose source points (no face uses them) belong to the piece they lie on
+            std::vector<bool> referenced(world.size(), false);
+            for (auto& f : inst->faces)
+                for (int c = 0; c < 3; c++) referenced[f.v[c]] = true;
+            for (size_t i = 0; i < world.size(); i++)
+                if (!referenced[i])
+                    for (auto& h : s.pieces)
+                        if (InsertSurfacePoints(h, {world[i]})) break;
         }
-        for (auto& h : s.pieces) TagPolygons(h, polygons);
+        for (size_t i = 0; i < s.pieces.size(); i++) TagPolygons(s.pieces[i], pieceIndex[i]);
         solids.push_back(s);
     } else {
         // one solid per bone, vertices in bone space
@@ -767,6 +995,7 @@ void BuildCollisionModel(BuildContext& ctx) {
             for (auto& f : inst->faces)
                 if (verts.count(f.v[0]) && verts.count(f.v[1]) && verts.count(f.v[2]))
                     for (int c = 0; c < 3; c++) AddPolygonPoint(polygons, Transform(inv, inst->gverts[f.v[c]].pos), f.polygon);
+            std::vector<PointPolygons> pieceIndex;  // per piece: its own source polygons
             Solid s;
             s.name = bones[gb].name;
             s.bone = static_cast<int>(gb);
@@ -777,15 +1006,28 @@ void BuildCollisionModel(BuildContext& ctx) {
                 std::vector<Vec3> normals;
                 for (int v : vlist) normals.push_back(inst->gverts[v].normal);
                 std::vector<std::array<int, 3>> fl;
+                std::vector<int> flPolygon;
                 std::map<int, int> idx;
                 for (size_t i = 0; i < vlist.size(); i++) idx[vlist[i]] = static_cast<int>(i);
                 for (auto& f : inst->faces)
-                    if (idx.count(f.v[0]) && idx.count(f.v[1]) && idx.count(f.v[2])) fl.push_back({idx[f.v[0]], idx[f.v[1]], idx[f.v[2]]});
+                    if (idx.count(f.v[0]) && idx.count(f.v[1]) && idx.count(f.v[2])) {
+                        fl.push_back({idx[f.v[0]], idx[f.v[1]], idx[f.v[2]]});
+                        flPolygon.push_back(f.polygon);
+                    }
                 for (auto& comp : ConnectedComponents(pts, normals, fl, qc.weldNormal)) {
                     std::vector<Vec3> cp;
                     for (int i : comp) cp.push_back(pts[i]);
                     Hull h;
-                    if (MakeHull(cp, h)) s.pieces.push_back(h);
+                    if (MakeHull(cp, h)) {
+                        InsertSurfacePoints(h, cp);
+                        s.pieces.push_back(h);
+                        std::set<int> members(comp.begin(), comp.end());
+                        PointPolygons own;
+                        for (size_t k = 0; k < fl.size(); k++)
+                            if (members.count(fl[k][0]) && members.count(fl[k][1]) && members.count(fl[k][2]))
+                                for (int c = 0; c < 3; c++) AddPolygonPoint(own, pts[fl[k][c]], flPolygon[k]);
+                        pieceIndex.push_back(own);
+                    }
                 }
             }
             if (s.pieces.empty()) {
@@ -794,9 +1036,22 @@ void BuildCollisionModel(BuildContext& ctx) {
                     Warn("joint %s has a flat collision mesh; skipped", bones[gb].name.c_str());
                     continue;
                 }
+                InsertSurfacePoints(h, pts);
                 s.pieces.push_back(h);
+                pieceIndex = {polygons};
             }
-            for (auto& h : s.pieces) TagPolygons(h, polygons);
+            // loose source points (no face uses them) weighted to this joint belong to
+            // the piece they lie on
+            std::vector<bool> referenced(inst->verts.size(), false);
+            for (auto& f : inst->faces)
+                for (int c = 0; c < 3; c++) referenced[f.v[c]] = true;
+            for (size_t v = 0; v < inst->verts.size(); v++) {
+                if (referenced[v] || inst->verts[v].weights.empty() || boneMap[inst->verts[v].weights[0].bone] != lb) continue;
+                Vec3 lp = Transform(inv, inst->gverts[v].pos);
+                for (auto& h : s.pieces)
+                    if (InsertSurfacePoints(h, {lp})) break;
+            }
+            for (size_t i = 0; i < s.pieces.size(); i++) TagPolygons(s.pieces[i], pieceIndex[i]);
             // parent: nearest ancestor bone that has a solid (fixed up below)
             int p = bones[gb].parent;
             s.parent = p >= 0 ? bones[p].name : "";
