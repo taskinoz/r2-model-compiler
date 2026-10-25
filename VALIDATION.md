@@ -128,6 +128,14 @@ re-quantization: errors are recomputed from the decoded poses. None is claimed l
   stays at the bind pose (`shot.png`; the procedural model is on the left). Holding
   the driver at 45 degrees (`half`) leaves the cube about halfway up and partly rolled
   (`half.png`), as Valve's normalized blend predicts. These are visual checks.
+- **Aim at attachment** (`test-output/aim-ingame/`, `tools/make_aim_test_model.py`):
+  a bar on `aimer` aims either at the attachment `aim_att`, 40 units above the rising
+  `target` bone and marked by the large cube (type 4), or at the bone itself, marked
+  by the small cube (type 3). At the end of `rise`, the type-4 bar's extension passes
+  through the large cube and the type-3 bar's through the small one
+  (`shot2-annotated.png`; type 4 is on the left). In the three-model shot (`shot.png`)
+  the build without procedural bones is hidden behind the viewmodel; the earlier
+  without-procedural controls stayed at bind.
 - **UI panels** (`test-output/ui-ingame/`): the R-201 viewmodel, mounted over
   `ptpov_rspn101`. Rebuilt from decompiled source it shows the ammo counter
   (`A_rebuilt.png`); with the panel hashes zeroed (`B_nohash.png`) or the panels

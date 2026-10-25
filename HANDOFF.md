@@ -29,8 +29,8 @@ limitations.
   renders and ragdolls. The rebuilt prowler matches retail in pose (within 0.002
   units) and root motion (origin within 0.013 units over 13,867 units of travel);
   rebuilt drone_frag matches retail's scale-driven head lights, which a control
-  without scale misses by 21-23 units. Quaternion-interpolation, aim-at and
-  axis-interpolation procedural bones animate on the client (screenshots); the
+  without scale misses by 21-23 units. Quaternion-interpolation, aim-at (bone and
+  attachment) and axis-interpolation procedural bones animate on the client (screenshots); the
   server's attachment queries ignore procedural bones. A rebuilt R-201 viewmodel whose ammo-counter panel was renamed
   (`models/r2c_test/My_Counter_Panel`, looked up from a weapon script in lower case)
   shows the counter, through the compiler's derived panel hash.
@@ -42,7 +42,7 @@ limitations.
 ## Reports
 
 - test-output/release-corpus9/results.json: current full run with the release build.
-- test-output/prowler-ingame, scale-ingame, proc-ingame, axis-ingame, ui-ingame: in-game
+- test-output/prowler-ingame, scale-ingame, proc-ingame, axis-ingame, aim-ingame, ui-ingame: in-game
   pose, root-motion, scale, procedural-bone and UI panel evidence.
 - test-output/ui-corpus2: round trip of the 35 retail models with UI panels.
 - test-output/corpus-heading, corpus-euler: frame-movement yaw A/B runs.
