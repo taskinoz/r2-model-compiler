@@ -215,6 +215,35 @@ Retail Titanfall 2 models use vertex colours (about a quarter of them) but never
 the UV2 flag. The UV2 data is written correctly (covered by a regression test), but
 it only shows in game if the model's material reads a second UV set.
 
+### Tangents
+
+A DMX `tangent$0` (or `tangents`) attribute, vector4 with the bitangent sign in w, is
+stored as given instead of being computed. Corners that differ only in tangent stay
+separate vertices, which is how retail meshes keep vertices apart that match in
+position, normal and UV. Decompiled meshes carry retail's tangents for this reason.
+Without the attribute, tangents are computed from the UVs as before.
+
+### Retail values
+
+These commands set values retail models store that plain QC cannot express. The
+decompiler writes them when a model needs them.
+
+- `$mass <kg>` at the top level: the header mass of a model without physics (inside a
+  collision block, `$mass` keeps its usual meaning).
+- `$contents <number>`: the exact contents mask (names such as `grate` still work).
+- `$srcbonetransform "bone" <12 pre> <12 post>`: a source bone transform, two 3x4
+  matrices row by row.
+- `$attachment "name" "bone" x y z matrix <12 values>`: the bone-space matrix exactly as
+  stored (retail has some that are not rotations, such as all zeros).
+- `$autohitboxes`: generate hitboxes as Valve's studiomdl does. Without `$hbox` lines or
+  this command, the hitbox set is empty but flagged as generated, as in retail.
+- `$ikchain ... links "a" "b" "c"`: the chain's three links when they are not the plain
+  parent chain (retail skips twist bones); `unk <value>` sets the chain's unknown float
+  (default 0.707).
+- Sequence options: `unk_c4 <n>`, and `blendlayer` options `realtime` and `flags <n>`.
+- `$keyvalues` may appear more than once; each block is stored as its own
+  `mdlkeyvalue` text, as retail does.
+
 ## Building from source
 
 Requires Visual Studio 2022 (or later) with the C++ x64 tools, and CMake (included with

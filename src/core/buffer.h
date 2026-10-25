@@ -91,7 +91,10 @@ public:
     // Writes the table at the current end of buf and patches all recorded references.
     void Write(Buffer& buf) {
         std::unordered_map<std::string, size_t> where;
-        // Respawn's studiomdl writes strings in first-reference order, deduplicated.
+        // Respawn's studiomdl writes strings in first-reference order, deduplicated,
+        // after an empty string that always opens the table.
+        where[""] = buf.Tell();
+        buf.CString("");
         for (auto& r : refs_) {
             if (where.count(r.s)) continue;
             where[r.s] = buf.Tell();

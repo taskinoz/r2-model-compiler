@@ -393,6 +393,7 @@ struct QcModelDef {
     std::vector<SrcBoneTransform> srcBoneTransforms;
     bool autoCenter = false;
     Vec3 eyePosition;
+    std::vector<std::string> sourceFiles;  // $sourcefile (r2c extension): the stored source-file list
     float headerMass = -1;  // top-level $mass (r2c extension): header mass of a model without physics
     bool illumSet = false;
     Vec3 illumPosition;

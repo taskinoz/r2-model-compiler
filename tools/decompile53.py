@@ -838,7 +838,7 @@ def decompile(path, outdir):
             extra['uv2'] = (u2[0], 1 - u2[1])
         return extra
 
-    qc = ['$modelname "%s"' % h['name']]
+    qc = ['$modelname "%s"' % (mdl53.cstr(d, h['sznameindex']) if h['sznameindex'] else h['name'])]  # full name; the inline one is cut at 64
     if static:
         qc.append('$staticprop')
     for c in cds:
@@ -848,6 +848,11 @@ def decompile(path, outdir):
     # $illumposition and $eyeposition take studiomdl's rotated axes: stored (-y, x, z)
     il = h['illumposition']
     qc.append('$illumposition %s %s %s' % (fmt(il[1]), fmt(-il[0]), fmt(il[2])))
+    # the source files studiomdl recorded (Maya scenes), ';'-terminated
+    if h['sourceFilenameOffset']:
+        for src in mdl53.cstr(d, h['sourceFilenameOffset']).split(';'):
+            if src:
+                qc.append('$sourcefile "%s"' % src)  # QC paths are literal (no escapes)
     if h['contents'] != 1:
         qc.append('$contents %d' % h['contents'])  # exact mask (r2c extension)
     if not h['phySize'] and h['mass'] != 1:

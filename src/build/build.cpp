@@ -199,9 +199,19 @@ void BuildContext::BuildHitboxes() {
 }
 
 void BuildContext::BuildBounds() {
-    // CalcSequenceBoundingBoxes: every posed vertex, plus each bone's hitbox bounds as a
-    // transformed AABB. Retail leaves the per-bone vertex bounds out of the AABB step
-    // (rotated vertex boxes would overshoot the vertices themselves).
+    // CalcSequenceBoundingBoxes: every posed vertex of every mesh, lower LODs included
+    // (the vertices the VVD holds), plus each bone's hitbox bounds as a transformed AABB.
+    // Retail leaves the per-bone vertex bounds out of the AABB step (rotated vertex boxes
+    // would overshoot the vertices themselves).
+    std::vector<const SrcVertex*> meshVerts;
+    for (auto& ip : insts) {
+        if (!ip->active) continue;
+        std::vector<bool> used(ip->gverts.size(), false);
+        for (auto& f : ip->faces)
+            for (int c = 0; c < 3; c++) used[f.v[c]] = true;
+        for (size_t i = 0; i < ip->gverts.size(); i++)
+            if (used[i]) meshVerts.push_back(&ip->gverts[i]);
+    }
     std::vector<Vec3> rmin(bones.size(), Vec3(9999, 9999, 9999)), rmax(bones.size(), Vec3(-9999, -9999, -9999));
     for (auto& set : out.hitboxSets)
         for (auto& h : set.boxes) {
@@ -226,14 +236,11 @@ void BuildContext::BuildBounds() {
                     }
                 }
             }
-            for (auto* s : bodyInsts) {
-                if (!s) continue;
-                for (auto& v : s->gverts) {
-                    Vec3 pos;
-                    for (auto& w : v.weights) pos += Transform(pt[w.bone], v.pos) * w.weight;
-                    bmin = Min(bmin, pos);
-                    bmax = Max(bmax, pos);
-                }
+            for (const SrcVertex* v : meshVerts) {
+                Vec3 pos;
+                for (auto& w : v->weights) pos += Transform(pt[w.bone], v->pos) * w.weight;
+                bmin = Min(bmin, pos);
+                bmax = Max(bmax, pos);
             }
         }
         if (bmin.x > bmax.x) bmin = bmax = Vec3();
@@ -666,6 +673,7 @@ CompiledModel Build(QcModelDef& qc) {
     out.surfaceProp = qc.surfaceProp;
     out.contents = qc.contents;
     out.keyValues = qc.keyValues;
+    out.sourceFiles = qc.sourceFiles;
     for (auto& t : qc.srcBoneTransforms) {
         CompiledModel::SrcBoneTransform c;
         c.bone = t.bone;

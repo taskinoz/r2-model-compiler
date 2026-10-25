@@ -32,7 +32,13 @@ struct PTri {
 void BuildPerTriAABB(BuildContext& ctx) {
     CPerTri& pt = ctx.out.perTri;
     pt = CPerTri();
-    if (!ctx.qc.staticProp) return;  // version 0: header only
+    // static props, and props that may become static (prop_data "allowstatic" "1"),
+    // get the tree; everything else is version 0, header only
+    const std::string& kv = ctx.out.keyValues;
+    size_t at = kv.find("\"allowstatic\"");
+    if (at != std::string::npos) at = kv.find_first_not_of(' ', at + 13);
+    bool allowStatic = at != std::string::npos && kv.compare(at, 3, "\"1\"") == 0;
+    if (!ctx.qc.staticProp && !allowStatic) return;
 
     // LOD 0 triangles of the default model of every body part. Like retail, each mesh
     // vertex is its own point (vertices that only share a position are not merged).

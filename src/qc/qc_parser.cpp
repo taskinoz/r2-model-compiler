@@ -1683,6 +1683,7 @@ void Parser::Register() {
         m_.jointContents.push_back({j, c});
     };
     h["$mass"] = [&] { m_.headerMass = F("mass"); };
+    h["$sourcefile"] = [&] { m_.sourceFiles.push_back(S("source file")); };
     h["$illumposition"] = [&] {
         // studiomdl rotates these by its built-in 90 degrees
         float x = F("x"), y = F("y"), z = F("z");
