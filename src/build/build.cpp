@@ -218,11 +218,36 @@ void BuildContext::BuildBounds() {
             rmin[h.bone] = Min(rmin[h.bone], h.bmin);
             rmax[h.bone] = Max(rmax[h.bone], h.bmax);
         }
+    // deltas are measured applied to a base pose: the first full animation's first frame
+    // (retail gives additive sequences that pose's box, nudged by the delta)
+    std::vector<Vec3> basePos(bones.size());
+    std::vector<RadianEuler> baseRot(bones.size());
+    for (size_t k = 0; k < bones.size(); k++) {
+        basePos[k] = bones[k].pos;
+        baseRot[k] = bones[k].rot;
+    }
+    for (auto& a : anims)
+        if (!(a.flags & STUDIO_DELTA) && a.numFrames > 0) {
+            for (size_t k = 0; k < bones.size(); k++) {
+                basePos[k] = a.sanim[0][k].pos;
+                baseRot[k] = a.sanim[0][k].rot;
+            }
+            break;
+        }
     for (auto& a : anims) {
         Vec3 bmin(9999, 9999, 9999), bmax(-9999, -9999, -9999);
         for (int j = 0; j < a.numFrames; j++) {
             std::vector<Mat3x4> bt;
-            CalcBoneTransforms(a, j, bt);
+            if (a.flags & STUDIO_DELTA) {
+                bt.resize(bones.size());
+                for (size_t k = 0; k < bones.size(); k++) {
+                    const auto& f = a.sanim[j][k];
+                    Quat q = QuaternionNormalize(QuaternionMult(AngleQuaternion(f.rot), AngleQuaternion(baseRot[k])));
+                    Mat3x4 bm = QuaternionMatrix(q, basePos[k] + f.pos);
+                    bt[k] = bones[k].parent == -1 ? bm : Concat(bt[bones[k].parent], bm);
+                }
+            } else
+                CalcBoneTransforms(a, j, bt);
             std::vector<Mat3x4> pt(bones.size());
             for (size_t k = 0; k < bones.size(); k++) {
                 pt[k] = Concat(bt[k], Invert(bones[k].boneToPose));

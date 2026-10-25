@@ -88,7 +88,7 @@ void MdlWriter::WriteHeader() {
     Hdr(H_VERSION, 53);
     Str(H_SZNAME, 0, m_.name);
     std::string n = m_.name;
-    if (n.size() > 63) n = n.substr(0, 63);
+    if (n.size() > 62) n = n.substr(0, 62);  // retail keeps at most 62 characters here (9/9 long names)
     std::memcpy(&b_.Data()[H_NAME], n.data(), n.size());
     auto v3 = [&](size_t off, const Vec3& v) {
         b_.PatchAt<float>(off, v.x);

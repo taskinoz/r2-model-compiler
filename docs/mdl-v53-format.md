@@ -96,8 +96,13 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
   - vertices are 6 bytes, uint16 fractions of the bounds.
 - A triangle's fourth field holds its surface property index from
   `surfaceproperties.txt` (for example 22 = metal, 16 = glass).
-- `perTriAABBVertCount` is the number of mesh vertices LOD 0 uses. Vertices sharing a
-  position are not merged.
+- The tree exists (version 2) for static props and for props whose keyvalues hold
+  `prop_data { "allowstatic" "1" }` (21/21 such animated props); other models write
+  version 0.
+- `perTriAABBVertCount` is often the number of mesh vertices LOD 0 uses (vertices
+  sharing a position are not merged), and on some models every VVD vertex. Others,
+  such as pelican_case_ammobox (4,142 of 4,543), fit no LOD subset or position merge.
+  Respawn likely built the list from its own source mesh.
 - The tree splits large nodes at the median (the left half gets the smaller count).
   Smaller nodes split by another, apparently spatial, rule: leaves hold 0 to 12
   triangles, and a 12-triangle node can still split. That rule is not reproduced, so
