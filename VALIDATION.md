@@ -5,8 +5,9 @@ animated models, including Respawn root motion (frame movement), bone scale
 animation, IK rules, sequence weight lists, procedural bones, bone followers and UI
 panel meshes. It is not a claim of complete Valve/Respawn feature parity.
 
-Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
-SHA-256: `a6370348bc3e25c54d02780dbffb21679204a18465bfac312ff67e80423fc457`.
+Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime),
+released as v0.3.0. SHA-256:
+`a6370348bc3e25c54d02780dbffb21679204a18465bfac312ff67e80423fc457`.
 (v0.2.0 shipped `67fb263a...` and v0.1.0 `90c58cc2...`; the changes since v0.2.0 are
 under "Collision faces from source polygons".)
 
