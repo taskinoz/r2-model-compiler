@@ -406,6 +406,11 @@ void BuildContext::BuildSequences() {
         }
         s.bmin = bmin;
         s.bmax = bmax;
+        if (qs.bboxSet) {
+            s.bmin = qs.bboxMin;
+            s.bmax = qs.bboxMax;
+            s.explicitBox = true;
+        }
         out.sequences.push_back(s);
     }
     // autolayer sequence indices refer to the QC order; remap if declared-only sequences were skipped

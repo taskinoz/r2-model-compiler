@@ -241,6 +241,8 @@ struct QcSequence {
     std::vector<ActivityModifier> activityModifiers;
     int ikResetMask = 0;
     int unkC4 = 0;  // unidentified seqdesc field at 0xC4 (r2c extension "unk_c4")
+    bool bboxSet = false;  // "bbox" (r2c extension): the stored box instead of a computed one
+    Vec3 bboxMin, bboxMax;
     bool isOverride = false;  // $declaresequence
 };
 

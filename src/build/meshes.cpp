@@ -35,6 +35,7 @@ bool SameVertex(const CVertex& a, const CVertex& b) {
     for (int i = 0; i < a.numBones; i++)
         if (a.bone[i] != b.bone[i] || std::fabs(a.weight[i] - b.weight[i]) > 1e-5f) return false;
     if (std::memcmp(a.color, b.color, 4) != 0) return false;
+    if (a.sourceId != b.sourceId) return false;
     if (a.hasTangent != b.hasTangent) return false;
     if (a.hasTangent && std::memcmp(&a.tangent, &b.tangent, sizeof(Vec4)) != 0) return false;
     return true;
@@ -89,6 +90,7 @@ CVertex MakeVertex(const SrcVertex& sv, const std::vector<GBone>& bones,
     v.uv2 = sv.uv2;
     v.tangent = sv.tangent;
     v.hasTangent = sv.hasTangent;
+    v.sourceId = sv.sourceId;
     if (sv.hasColor) {
         for (int i = 0; i < 4; i++) v.color[i] = static_cast<uint8_t>(std::clamp((&sv.color.x)[i], 0.f, 1.f) * 255.f + 0.5f);
     }
@@ -186,6 +188,9 @@ void BuildContext::BuildMeshes() {
     // has such models (e.g. switch 250 before 40), so the order is not sorted here
     int numLods = static_cast<int>(lods.size());
     if (numLods > kMaxLods) Fatal("too many LODs (%d, max %d)", numLods, kMaxLods);
+    // the vertex LOD bits come from the meshes built here; bone tagging marked every bone
+    // a LOD source uses as LOD 0, which retail does not
+    for (auto& b : bones) b.flags &= ~BONE_USED_BY_VERTEX_MASK;
     out.numLods = numLods;
     out.lodSwitch.clear();
     for (auto* l : lods) out.lodSwitch.push_back(l ? l->switchPoint : 0.f);

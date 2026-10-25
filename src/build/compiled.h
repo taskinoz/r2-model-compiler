@@ -67,6 +67,7 @@ struct CVertex {
     Vec3 normal;
     Vec4 tangent;
     bool hasTangent = false;  // given by the source, not computed
+    int sourceId = -1;        // source vertex identity (DMX r2c_vertex_id), -1 if none
     Vec2 uv;
     Vec2 uv2;
     uint8_t color[4] = {255, 255, 255, 255};
@@ -212,6 +213,7 @@ struct CSequence {
     int actWeight = 0;
     std::vector<CEvent> events;
     Vec3 bmin, bmax;
+    bool explicitBox = false;  // set by the QC; collision does not grow it
     int groupSize[2] = {1, 1};
     std::vector<int16_t> animIndices;  // groupSize[0]*groupSize[1]
     int paramIndex[2] = {-1, -1};

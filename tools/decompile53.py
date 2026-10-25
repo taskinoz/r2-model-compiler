@@ -329,7 +329,7 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
                     q(joint_ids[i]), q(bones[i]['name']), transform(bones[i]['name'], pos, matrix_quaternion(angle_matrix(rot))), kids))
 
     positions, weights = [], []                                  # per shared vertex
-    loop_pos, normals, uvs, uv2s, colors, tangents = [], [], [], [], [], []  # per polygon corner (loop)
+    loop_pos, normals, uvs, uv2s, colors, tangents, vids = [], [], [], [], [], [], []  # per polygon corner (loop)
     shared = {}
     material_faces = {}                                          # material -> loops, -1 ends a polygon
 
@@ -350,6 +350,7 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
             uv2s.append(extra.get('uv2'))
             colors.append(extra.get('color'))
             tangents.append(extra.get('tangent'))
+            vids.append(extra.get('id'))
         out.append(-1)
     for pos, wts, piece in loose:
         vertex(piece, pos, wts)
@@ -373,6 +374,11 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
             fmt_names.append(name)
             filled = [v if v is not None else default for v in values]
             attrs.append('"%s" %s\n"%sIndices" %s' % (name, arr(kind, [vec(v) for v in filled]), name, arr('int_array', loops)))
+    if any(i is not None for i in vids):
+        # r2c: the retail vertex each corner came from, so vertices retail kept apart
+        # (identical in every attribute) stay apart; not listed in vertexFormat
+        attrs.append('"r2c_vertex_id" %s\n"r2c_vertex_idIndices" %s' % (
+            arr('int_array', [q(str(i if i is not None else -1)) for i in vids]), arr('int_array', loops)))
     fmt_names += ['blendweights$0', 'blendindices$0']
     mesh_id, vd_id, dag_id, model_id = (str(next(ids)) for _ in range(4))
     vertex_data = ('"DmeVertexData"\n{\n"id" "elementid" %s\n"name" "string" "bind"\n'
@@ -945,7 +951,7 @@ def decompile(path, outdir):
                                     pos = rotate(ROT_M90, pos)
                                     nrm = rotate(ROT_M90, nrm)
                                     tan = tuple(rotate(ROT_M90, tan[:3])) + (tan[3],)
-                                extra = dict(vvc_extra(vi) if vvc else {}, uv=(uv[0], 1 - uv[1]), tangent=tan)
+                                extra = dict(vvc_extra(vi) if vvc else {}, uv=(uv[0], 1 - uv[1]), tangent=tan, id=vi)
                                 tri.append((pos, nrm, w, extra))
                             tris.append((mat, tri))
                 # DMX keeps what SMD can't: vertex colours, second UVs and the stored tangents,
@@ -1261,6 +1267,9 @@ def decompile(path, outdir):
             lines.append('\tikresetmask %d' % s['ikResetMask'])
         if s['unk_C4']:
             lines.append('\tunk_c4 %d' % s['unk_C4'])
+        # retail's stored box (r2c extension); some are not what the animation gives
+        # (offset source animations), so it is kept as is. Delete the line to recompute.
+        lines.append('\tbbox %s' % ' '.join('%.9g' % v for v in list(s['bbmin']) + list(s['bbmax'])))
         first = anim_names[idxs[0]][3]
         for e in range(s['numevents']):
             eo = o + s['eventindex'] + e * 0x50

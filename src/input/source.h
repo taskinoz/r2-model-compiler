@@ -44,6 +44,7 @@ struct SrcVertex {
     // vertices that differ only in it stay apart, as studiomdl's output shows
     bool hasTangent = false;
     Vec4 tangent;
+    int sourceId = -1;  // DMX r2c_vertex_id: corners with different ids never merge
 };
 
 struct SrcFace {

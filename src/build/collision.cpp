@@ -1305,7 +1305,7 @@ void BuildCollisionModel(BuildContext& ctx) {
     // expand the hull bounds by the collision AABB (CollisionModel_ExpandBBox). The solid
     // was posed by animation 0 frame 0; retail measures it unposed (bind pose), which
     // differs only when that frame moves the root bone.
-    if (!qc.joints && !ctx.out.sequences.empty()) {
+    if (!qc.joints && !ctx.out.sequences.empty() && !ctx.out.sequences[0].explicitBox) {
         Mat3x4 unpose;
         if (!ctx.anims.empty()) {
             std::vector<Mat3x4> b2w;

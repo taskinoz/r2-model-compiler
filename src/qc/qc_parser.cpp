@@ -1030,6 +1030,12 @@ void Parser::CmdSequence(bool declare) {
             seq.unkC4 = I("value");
             return true;
         }
+        if (Is("bbox")) {
+            seq.bboxMin = V3();
+            seq.bboxMax = V3();
+            seq.bboxSet = true;
+            return true;
+        }
         if (Is("addlayer")) {
             QcAutoLayer l;
             l.sequence = S("sequence");
