@@ -4,8 +4,13 @@ This build is usable for Titanfall 2 static props, moving physics props and skin
 animated models, including Respawn root motion (frame movement), bone scale
 animation, IK rules, sequence weight lists, procedural bones and UI panel meshes. It is not a claim of complete Valve/Respawn feature parity.
 
-Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
-SHA-256: `90c58cc2374b1e3e4618b90c8c3ef940f9686de797af1ccd847336d5540af009`.
+Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime),
+released as v0.1.0. SHA-256:
+`90c58cc2374b1e3e4618b90c8c3ef940f9686de797af1ccd847336d5540af009`.
+
+Paths under `test-output/` name the local report folders the tools produced (JSON
+results, logs and screenshots). They are not part of the repository; the commands
+below regenerate them from your own copy of the game.
 
 ## Automated checks
 
@@ -150,7 +155,7 @@ Structured reports and screenshots are under `test-output/`:
 `physics-release-ingame.png`, `animation-release-ingame.png`,
 `character-release-ingame.png` and `ragdoll-release-control.png`.
 
-## Fixes in this continuation
+## Parity work behind these results
 
 - Robust hull welding/visibility and farthest-first construction.
 - Collision smoothing-group separation, including touching convex pieces.

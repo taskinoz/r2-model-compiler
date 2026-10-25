@@ -1,149 +1,132 @@
 # r2-model-compiler
 
-A model compiler for Titanfall 2 (MDL v53). It reads a QC file with SMD/DMX sources,
-as written by Crowbar decompiles or exported by Blender Source Tools, and writes a
-single v53 `.mdl` with its VTX, VVD, VVC and PHY data embedded.
+`r2studiomdl` is a model compiler for **Titanfall 2** (MDL v53). It reads a QC file with
+SMD or DMX sources and writes a single v53 `.mdl` file with its VTX, VVD, VVC and PHY
+data embedded, ready to load in game (for example through a Northstar mod). The QC
+can come from a Crowbar decompile or be written by hand around Blender Source Tools
+exports.
 
-The compiler supports static props, physics props and skinned, animated models.
-Generated models have been loaded in Titanfall 2 through Northstar, including a
-Blender animation whose attachment movement was measured in game. See
-[VALIDATION.md](VALIDATION.md) for the tested build and remaining limitations.
+It replaces the old route of compiling a Source v49 model and converting it to v53.
+It also writes Respawn's own data directly: root-motion tracks, bone scale animation,
+IK rules, procedural bones and weapon UI panels.
 
-The Windows package contains `r2studiomdl.exe` and three source examples:
+> Not affiliated with Respawn Entertainment, Electronic Arts or Valve. You need your
+> own copy of Titanfall 2; no game assets are included.
 
-```powershell
-.\r2studiomdl.exe -game "C:\Games\Titanfall2" examples\static_prop\box.qc
-.\r2studiomdl.exe -game "C:\Games\Titanfall2" examples\physics_prop\physics_box.qc
-.\r2studiomdl.exe -game "C:\Games\Titanfall2" examples\animated_prop\animated_prop.qc
-```
+## Features
 
-To install into a Northstar mod, pass its `mod` folder as `-game`. The compiler
-writes `models/<$modelname>` beneath that directory. Compiling creates the model
-file; a map or script must still spawn an entity that references it. Physics props
-need a `prop_data` keyvalues block, as demonstrated by the physics example.
+- Static props, physics props (collision hulls, PHY, ragdolls, the map-collision block)
+  and skinned, animated models with LODs, hitboxes, attachments and skins.
+- SMD and DMX input (binary DMX 1-5 and 9, keyvalues2), including Blender Source
+  Tools output.
+- A studiomdl-style command line (`-game`, `-nop4`, `-verbose`, `-nox360`), so Crowbar
+  can use it as its compiler.
+- Respawn animation data:
+  - frame-movement root motion;
+  - bone scale animation;
+  - delta animations, blend pose keys and sequence weight lists.
+- IK chains and rules: touch, footstep, attachment, release and unlatch, with
+  `ikfixup`.
+- Procedural bones: jiggle, quaternion interpolation, axis interpolation, and aim at a
+  bone or attachment.
+- Weapon UI panel meshes (`$uipanel`), such as ammo counters and sight screens.
 
-Build with Visual Studio 2022 and CMake:
+All 602 retail multiplayer models decompile and recompile with it. 560 match the
+original in every compared field, and the rest differ by documented sub-inch amounts.
+See [VALIDATION.md](VALIDATION.md) for the evidence and in-game checks.
 
-```powershell
-.\build.bat
-.\build\r2studiomdl.exe -game C:\Games\Titanfall2 path\model.qc
-# Write to an explicit file instead:
-.\build\r2studiomdl.exe -o out\model.mdl path\model.qc
-```
+## Quick start
 
-Inputs include SMD and DMX (binary 1–5 and 9, plus keyvalues2). The command-line
-test reproduces Crowbar's working directory, QC basename, `-game`, `-nop4`,
-`-verbose` and `-nox360` arguments. To use Crowbar, select this executable as the
-game setup's compiler and set the game directory to your mod. Crowbar's GUI has
-not been tested directly.
-
-Run the collision hull and corpus-runner regression tests:
-
-```powershell
-Push-Location build
-ctest --output-on-failure
-Pop-Location
-# Optional direct Python invocation (also run by CTest when Python is available):
-python -m unittest discover -s tests -p test_*.py
-```
-
-The hull tests check volume, containment and closed, consistently oriented edges
-on near-duplicate points and a float-transformed Blender cylinder. They also
-exercise shuffled inputs, different scales, interior points and degenerate inputs.
-
-To compare decompiled retail models with rebuilt output:
+Download `r2-model-compiler-win64.zip` from the
+[releases](../../releases) page and extract it. Then compile a QC into a mod folder:
 
 ```powershell
-python tools\roundtrip.py --out test-output\retail path\to\models
-# Process independent models in parallel:
-python tools\roundtrip.py --jobs 8 --out test-output\retail path\to\models
-# Continue an interrupted run using the same compiler, tools and output folder:
-python tools\roundtrip.py --resume --out test-output\retail path\to\models
+.\r2studiomdl.exe -game "<Titanfall2>\R2Northstar\mods\MyMod\mod" path\to\model.qc
 ```
 
-Each completed model is saved to `results.json` atomically. Resume skips recorded
-results, including failures, when the input's size and timestamp are unchanged.
-Changing the compiler or comparison tools requires a fresh run. Use a new output
-folder, or omit `--resume`, to rerun failures. Models with the same basename use
-separate work folders.
+The model is written to `models\<$modelname>` beneath the `-game` folder. Use
+`-o out\model.mdl` to write a single file instead. The package includes three example
+sources (static prop, physics prop, animated prop); see
+[examples/README.md](examples/README.md).
 
-The comparison covers bone names and parents, bind positions, texture names,
-triangle counts, sequence names, sampled animation world positions, collision
-volume, UI panels and selected attachment/collision counts. A clean comparison is evidence
-for those fields; in-game behavior needs separate testing.
+Compiling creates the model file; a map or script still has to spawn an entity that
+uses it. Physics props need a `prop_data` keyvalues block, as the physics example
+shows.
 
-`tools/ingame_test.py` creates a separate Northstar profile, loads the supplied
-models, runs a collision trace and captures a screenshot. For example:
+### With Crowbar
 
-```powershell
-python tools\ingame_test.py --profile R2ModelTest --sequence bend out\model.mdl=models/r2c_test/model.mdl
-```
+In Crowbar's game setup, select `r2studiomdl.exe` as the model compiler and set the
+game folder to your mod's `mod` directory. The compiler accepts the arguments
+Crowbar passes. Crowbar's own decompiles of Titanfall 2 models are valid input.
 
-`--probe-attachment name` measures an attachment during playback, and
-`--pose-attachments a,b,...` logs those attachments' origins and angles, which is a
-quick way to compare a rebuilt model's pose with the original side by side.
-`--motion seq1,seq2` plays each sequence with `Anim_PlayWithRefPoint`, so the
-entity follows the sequence's root motion, and records origin, yaw and the probe
-attachment at 0/25/50/75/95% of each sequence in the report. `--physics`
-spawns moving props above the floor and checks that they fall. `--extra-file
-local=gamepath` mounts another file in the test mod, such as a weapon script that
-names a new UI panel. `--report file.json`
-writes the validation result; missing spawns, script errors, timeouts and missing
-screenshots return a nonzero exit code. `--npc --ragdoll` exercises an NPC death
-path, but a successful spawn/death call alone does not prove ragdoll physics.
+### With Blender
 
-To create the Windows package after building and testing:
+Export meshes and animations with Blender Source Tools as SMD or DMX, and reference
+them from a QC as you would for Source. The animated example was made this way.
 
-```powershell
-.\tools\package.ps1
-```
+## QC reference: Respawn additions
 
-Bone scale: Respawn animations can scale bones. An SMD skeleton row may carry
-three extra values after the rotation, the bone's local x/y/z scale (default 1):
-`bone px py pz rx ry rz sx sy sz`. Valve's studiomdl reads only the first seven
-values, so such files still load elsewhere. DMX joints may use a `scale` attribute
-(float or vector) on their transform, animated through `scale` channels.
-Animations that scale any bone are flagged as retail ones are (0x20000), as are their
-sequences.
+Everything else follows Valve's studiomdl. These additions cover Titanfall 2 data.
 
-Other QC options for Respawn data: `$animation ... delta` marks a source that already
-holds per-bone local deltas (as a decompiled delta animation does), and
-`$sequence { ... posekeys <count> <values...> }` sets explicit blend positions where
-retail blends are not evenly spaced. A named `$animation`'s own options (such as
-`loop`) are not copied onto the sequences that use it; options written inside the
-`$sequence` block are.
+### Root motion
 
-Procedural bones: `$jigglebone` blocks, and studiomdl's `$proceduralbones` files: a
-`.vrd` file (`<helper>`/`<display>`/`<basepos>`/`<trigger>` quaternion-interpolation
-bones and `<aimconstraint>` aim-at-bone/attachment bones) or a `.txt` axis-interpolation
-file: `version 1`, `proceduralbones`, then per bone
-`bone "bone" "parent" "control" "controlparent" <axis 1-3>`, `basepos x y z` and six
-`axis <0-5> x y z roll pitch yaw` poses (+X, -X, +Y, -Y, +Z, -Z of the control bone's
-chosen axis, as studiomdl reads them). The bones they drive
-are kept even without vertices. Titanfall 2 evaluates these on the client (rendering);
-server-side attachment queries do not see them.
+An `$animation` or `$sequence` with `rm` stores the root bones' yaw and translation as
+a Respawn frame-movement track, as retail models do. `LX`/`LY`/`LZ`/`LZR` motion
+extraction is stored the same way. Add `$legacymovement` to the QC to write Valve-style
+piecewise movement records instead.
 
-IK: `$ikchain` and the studiomdl `ikrule` animation option are compiled (touch,
-footstep, attachment, release and unlatch), including studiomdl's range inference
-for `.` values, per-frame target errors (footsteps follow the frame-movement track),
-their compressed streams, and automatic release rules for chains an animation moves
-without rules (`noautoik` turns that off). Footstep rules default to Respawn's
-`endheight -100`. `ikfixup` (footstep/world rules) re-solves the leg so the foot stays
-on its contact position over the rule's range and bakes the result into the
-animation. studiomdl's weight curve divides integers and is effectively 0 or 1; the
-compiler uses the intended frame-based curve. `$weightlist` lists are honoured per animation, and a sequence's weights
-are the largest of its animations'.
+### Bone scale
 
-Root motion: an `$animation`/`$sequence` with `rm` stores the root bones' yaw and
-translation as a Respawn frame-movement track, as retail models do; `LX`/`LY`/`LZ`/
-`LZR` motion extraction is stored the same way. Add `$legacymovement` to the QC to
-write Valve-style piecewise movement records instead.
+An SMD skeleton row may carry three extra values after the rotation, the bone's local
+scale (default 1): `bone px py pz rx ry rz sx sy sz`. Valve's studiomdl reads only the
+first seven values, so such files still load elsewhere. In DMX, a joint transform's
+`scale` attribute (float or vector) and `scale` channels are read. Animations that
+scale a bone are flagged as retail ones are (0x20000), as are their sequences.
 
-UI panels (RUI meshes): the quads a weapon draws its screens on (ammo counters,
-sights). A weapon script's `UiData` block names one with `"mesh" "models/..."`, and the
-client finds it by a hash of that name. The compiler derives the hash (MurmurHash3
-x86_32, seed 0, each byte ANDed with 0xDF so case does not matter, the terminating nul
-counted in the length), so a new panel needs only a name:
+### Animation and sequence options
+
+- `$animation ... delta`: the source already holds per-bone local deltas, as a
+  decompiled delta animation does.
+- `$sequence ... { posekeys <count> <values...> }`: explicit blend positions, for blends
+  that are not evenly spaced.
+- `$sequence ... { seqweights <weightlist> }`: the sequence's weight list, when it
+  differs from the weights its animations were encoded with.
+- A named `$animation`'s own options (such as `loop`) are not copied onto the sequences
+  that use it. Options written inside the `$sequence` block are.
+
+### IK
+
+- `$ikchain` and the `ikrule` animation option are compiled (touch, footstep,
+  attachment, release and unlatch).
+- This includes studiomdl's range inference for `.` values, per-frame target errors
+  (footsteps follow the root-motion track), their compressed streams, and automatic
+  release rules for chains an animation moves without rules (`noautoik` turns that
+  off).
+- Footstep rules default to Respawn's `endheight -100`.
+- `ikfixup` re-solves the leg so the foot stays on its contact position over the
+  rule's range, and bakes the result into the animation.
+- `$weightlist` lists apply per animation.
+
+### Procedural bones
+
+- `$jigglebone` blocks are supported.
+- `$proceduralbones` accepts studiomdl's two file types:
+  - **`.vrd`:** `<helper>`/`<display>`/`<basepos>`/`<trigger>` quaternion-interpolation
+    bones, and `<aimconstraint> bone parent target` aim bones. The target may be a
+    bone or an attachment; attachments are matched first.
+  - **`.txt` (axis interpolation):** `version 1`, `proceduralbones`, then for each bone
+    `bone "bone" "parent" "control" "controlparent" <axis 1-3>`, `basepos x y z` and six
+    `axis <0-5> x y z roll pitch yaw` poses. The poses are for +X, -X, +Y, -Y, +Z and -Z
+    of the control bone's chosen axis.
+
+Driven bones are kept even when no vertices use them. Titanfall 2 evaluates procedural
+bones on the client, so server-side attachment queries do not see their effect.
+
+### UI panels
+
+UI panels are the quads a weapon draws its screens on (ammo counters, sights). A weapon
+script's `UiData` block names one with `"mesh" "models/..."`, and the game finds it by
+a hash of that name. The compiler computes the hash, so a new panel needs only a name:
 
 ```
 $uipanel "models/weapons/attachments/my_counter"
@@ -157,9 +140,67 @@ $uipanel "models/weapons/attachments/my_counter"
 }
 ```
 
-A hex value after the name (`$uipanel "name" 0x1234abcd`) overrides the hash.
-At most 256 vertices and 64 faces; only the first 32 faces can be `ccw`.
-Decompiled retail panels are written without a hash when it matches the name's.
+- A hex value after the name (`$uipanel "name" 0x1234abcd`) overrides the hash. The hash
+  is MurmurHash3 x86_32 with seed 0, every byte ANDed with 0xDF (so case does not
+  matter), and the length counting the terminating nul.
+- At most 256 vertices and 64 faces; only the first 32 faces can be `ccw`.
 
-Limitations: Titanfall 1 and Apex model files are not direct compiler inputs;
-this tool consumes QC/SMD/DMX and targets Titanfall 2 v53 output.
+## Building from source
+
+Requires Visual Studio 2022 (or later) with the C++ x64 tools, and CMake (included with
+Visual Studio).
+
+```powershell
+.\build.bat                                   # builds build\r2studiomdl.exe
+Push-Location build; ctest --output-on-failure; Pop-Location
+```
+
+The CTest suite runs the C++ convex-hull tests and, when Python 3 is available, the
+Python compiler regression tests (`python -m unittest discover -s tests -p "test_*.py"`).
+`.\tools\package.ps1` builds the release ZIP.
+
+## Testing against the game
+
+The `tools/` folder holds the tools used to validate the compiler. They need your own
+Titanfall 2 install.
+
+- `decompile53.py` decompiles v53 models into QC/SMD.
+- `roundtrip.py` decompiles retail models, recompiles them and compares the results:
+
+  ```powershell
+  python tools\roundtrip.py --jobs 8 --compiler build\r2studiomdl.exe --out test-output\run path\to\models
+  ```
+
+- `ingame_test.py` loads compiled models in Titanfall 2 through Northstar and records
+  screenshots and measurements:
+
+  ```powershell
+  $env:TITANFALL2_DIR = "<Titanfall2 folder with Northstar>"
+  python tools\ingame_test.py --sequence idle out\model.mdl=models/r2c_test/model.mdl
+  ```
+
+[AGENTS.md](AGENTS.md) documents these tools, how to extract the retail corpus, the
+in-game test workflow and its pitfalls. [docs/mdl-v53-format.md](docs/mdl-v53-format.md)
+collects the v53 format facts the compiler relies on.
+
+## Limitations
+
+- Output targets Titanfall 2 v53 only. Titanfall 1 and Apex Legends model files are not
+  inputs; the compiler reads QC/SMD/DMX.
+- The remaining retail differences are listed in VALIDATION.md. Some animations
+  differ by 0.28-0.92 inches after re-quantization, and a few collision hulls by 1-3
+  faces or vertices.
+- Crowbar's command line is reproduced in a test, but its GUI has not been driven
+  automatically.
+
+## Acknowledgements
+
+- Valve's studiomdl (Source SDK) defines the QC language and compile behaviour followed
+  here.
+- The v53 structure notes come from the r-ex projects [rsx](https://github.com/r-ex/rsx)
+  and [rmdlconv](https://github.com/r-ex/rmdlconv).
+- [Crowbar](https://github.com/ZeqMacaw/Crowbar),
+  [Blender Source Tools](https://github.com/Artfunkel/BlenderSourceTools),
+  [Northstar](https://github.com/R2Northstar) and
+  [tf2vpk](https://github.com/pg9182/tf2vpk) made decompiling, authoring and in-game
+  testing possible.

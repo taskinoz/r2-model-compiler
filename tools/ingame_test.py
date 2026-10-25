@@ -1,11 +1,13 @@
 """Load compiled models in Titanfall 2 through Northstar and screenshot them.
 
-Builds an isolated Northstar profile (default C:/Games/Titanfall2/R2ModelTest) with
+Builds an isolated Northstar profile (<game>/R2ModelTest by default) with
 the core Northstar mods plus a generated test mod that precaches each model, spawns
 it as a prop_dynamic in front of the local player, takes a screenshot and quits.
 
 usage: python tools/ingame_test.py [--game DIR] [--map MAP] [--timeout S] model.mdl=models/path.mdl ...
 Each argument is a local compiled file and the game path it should be mounted at.
+--game is the Titanfall 2 folder with Northstar installed; it defaults to the
+TITANFALL2_DIR environment variable.
 """
 import argparse
 import glob
@@ -203,7 +205,8 @@ void function R2C_Capture()
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--game", default=r"C:\Games\Titanfall2")
+    ap.add_argument("--game", default=os.environ.get("TITANFALL2_DIR"),
+                    help="Titanfall 2 install with Northstar (default: TITANFALL2_DIR)")
     ap.add_argument("--profile", default="R2ModelTest")
     ap.add_argument("--map", default="mp_lf_stacks")
     ap.add_argument("--mode", default="tdm")
@@ -228,6 +231,8 @@ def main():
                     help="also mount a non-model file in the test mod (for example a weapon script)")
     ap.add_argument("models", nargs="+")
     a = ap.parse_args()
+    if not a.game:
+        ap.error("pass --game or set TITANFALL2_DIR to the Titanfall 2 folder")
     if a.npc and a.physics:
         ap.error('--npc and --physics are mutually exclusive')
 
