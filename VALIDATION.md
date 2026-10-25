@@ -20,8 +20,7 @@ SHA-256: `90c58cc2374b1e3e4618b90c8c3ef940f9686de797af1ccd847336d5540af009`.
 - A command-line test reproduces Crowbar's working directory, QC basename and
   studiomdl arguments, including a game path containing spaces. Crowbar's GUI
   itself has not been driven.
-- The full corpus was run with the previous build; see "Retail corpus" for how the
-  current executable differs from it.
+- The full corpus was run with the executable above (see "Retail corpus").
 
 ## Retail corpus
 
@@ -30,11 +29,10 @@ compile failure or decompiler exception. **560/602** match every compared field.
 
 Reports:
 
-- `test-output/release-corpus9/results.json` and `release-corpus9.log`: full run
-  (fresh decompile and compile) with the previous build (SHA-256 `0b386047...`); the
-  executable above adds `ikfixup`, which retail models do not use (matched on a
-  five-model spot run, `test-output/fixup-spot`), and UI panels, which only the 35
-  models below contain.
+- `test-output/release-corpus10/results.json` and `release-corpus10.log`: full run
+  (fresh decompile and compile) with the executable above, now including UI panels in
+  the comparison. The 42 differing models are exactly those of the previous build's
+  run (`release-corpus9`, SHA-256 `0b386047...`, before `ikfixup` and UI panels).
 - `test-output/ui-corpus2`: all 35 retail models with UI panels (163 panels), fresh
   decompile and compile with the executable above: 35/35 match, and every panel block
   (header hash, bones, vertices, faces, winding and bounds) is byte-identical to retail.

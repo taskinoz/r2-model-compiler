@@ -41,7 +41,8 @@ limitations.
 
 ## Reports
 
-- test-output/release-corpus9/results.json: current full run with the release build.
+- test-output/release-corpus10/results.json: current full run with the release build
+  (560/602, the same 42 differences as release-corpus9 with the previous build).
 - test-output/prowler-ingame, scale-ingame, proc-ingame, axis-ingame, aim-ingame, ui-ingame: in-game
   pose, root-motion, scale, procedural-bone and UI panel evidence.
 - test-output/ui-corpus2: round trip of the 35 retail models with UI panels.
