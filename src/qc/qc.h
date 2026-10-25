@@ -2,6 +2,7 @@
 // it after ParseScript().
 #pragma once
 
+#include <array>
 #include <map>
 #include <memory>
 #include <string>
@@ -270,6 +271,23 @@ struct QcAimAtBone {
     Vec3 aimVector, upVector, basePos;
 };
 
+// $uipanel: a RUI panel mesh (Respawn), as stored in the model. Faces name three
+// consecutive corners of a parallelogram; bounds hold the corners' panel coordinates.
+struct QcUIPanel {
+    std::string name;
+    uint32_t hash = 0;
+    bool hasHash = false;
+    std::vector<std::string> parents;
+    struct Vertex {
+        int parent = 0;
+        Vec3 pos;
+    };
+    std::vector<Vertex> vertices;
+    std::vector<std::array<int, 3>> faces;
+    uint32_t ccw = 0;  // bit per face
+    std::vector<std::array<float, 8>> bounds;  // per face: x[4], y[4]
+};
+
 struct QcCollisionJoint {
     std::string name;
     float damping = -1, rotdamping = -1, inertia = -1, massBias = -1;
@@ -337,6 +355,7 @@ struct QcModelDef {
     std::vector<QcAxisInterpBone> axisInterpBones;
     std::vector<QcQuatInterpBone> quatInterpBones;
     std::vector<QcAimAtBone> aimAtBones;
+    std::vector<QcUIPanel> uiPanels;
     std::vector<std::string> limitRotation;
 
     std::vector<QcAttachment> attachments;

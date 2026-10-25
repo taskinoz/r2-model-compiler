@@ -229,6 +229,29 @@ class CompilerRegressions(unittest.TestCase):
                               .replace('"proc_axisinterp.txt', '"decompiled/proc_axisinterp.txt'), 'second')
         self.assertEqual(roundtrip.compare(roundtrip.summary(output), roundtrip.summary(second)), [])
 
+    def test_ui_panel_hash_and_roundtrip(self):
+        # The client finds a panel by a case-folded murmur3 hash of the weapon script's
+        # "mesh" name; the compiler derives it, and an explicit hash still overrides it.
+        (self.work / 'body.smd').write_text((ROOT / 'tests/box/box.smd').read_text())
+        panel = ('{\n parent "root"\n vertex 0 0 -1 1\n vertex 0 0 1 1\n vertex 0 0 1 0\n'
+                 ' face 0 1 2 ccw\n bounds 0 1 1 0 0 0 1 1\n}\n')
+        output = self.compile('$modelname "test/ui.mdl"\n$body body "body.smd"\n$sequence idle "body.smd"\n'
+                              '$uipanel "models/weapons/attachments/p2011_rui_lower"\n' + panel +
+                              '$uipanel "models/test/other" 0x12345678\n' + panel)
+        data = output.read_bytes()
+        panels = dc.decode_ui_panels(data, mdl53.Model(data).hdr)
+        # 0xf4ab7fb9 is retail ptpov_p2011's hash for the same name
+        self.assertEqual([(p['name'], p['hash']) for p in panels],
+                         [('models/weapons/attachments/p2011_rui_lower', 0xf4ab7fb9), ('models/test/other', 0x12345678)])
+        self.assertEqual(dc.ui_panel_hash('MODELS/Weapons/attachments/p2011_rui_lower'), 0xf4ab7fb9)
+        self.assertEqual(panels[0]['ccw'], 1)
+        qc2 = dc.decompile(output, self.work / 'decompiled')
+        text = Path(qc2).read_text()
+        self.assertIn('$uipanel "models/weapons/attachments/p2011_rui_lower"\n', text)
+        self.assertIn('$uipanel "models/test/other" 0x12345678', text)
+        second = self.compile(text.replace('"test_bp', '"decompiled/test_bp').replace('"anim_', '"decompiled/anim_'), 'second')
+        self.assertEqual(roundtrip.compare(roundtrip.summary(output), roundtrip.summary(second)), [])
+
     def test_crowbar_command_line_and_output_path(self):
         # Crowbar sets the working directory to the QC folder, supplies the QC
         # basename, and passes -game plus its selected studiomdl options.

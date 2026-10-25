@@ -46,6 +46,16 @@ struct CBone {
     bool boundsValid = false;
 };
 
+struct CUIPanel {
+    uint32_t hash = 0;
+    std::string name;
+    std::vector<int> parents;  // bone indices
+    std::vector<std::pair<int, Vec3>> vertices;  // parent slot, position
+    std::vector<std::array<int16_t, 3>> faces;
+    uint32_t ccw = 0;
+    std::vector<std::array<float, 8>> bounds;
+};
+
 struct CJiggle {
     int flags = 0;
     float v[29] = {};
@@ -276,6 +286,7 @@ struct CompiledModel {
     std::vector<std::string> nodeNames;
     std::vector<uint8_t> transitions;  // numnodes * numnodes
     std::vector<CIKChain> ikChains;
+    std::vector<CUIPanel> uiPanels;
     std::vector<CPoseParam> poseParams;
     std::vector<CIKLock> ikAutoplayLocks;
     std::vector<std::string> includeModels;

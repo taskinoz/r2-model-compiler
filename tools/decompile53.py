@@ -499,6 +499,51 @@ def procedural_files(d, h, bones, attachments, outdir, base):
     return lines
 
 
+def decode_ui_panels(d, h):
+    """RUI panel meshes: list of dicts (hash, name, parents, vertices, faces, ccw, bounds)."""
+    out = []
+    for i in range(h['uiPanelCount']):
+        ho = h['uiPanelOffset'] + i * 8
+        hsh, mo = struct.unpack_from('<Ii', d, ho)
+        o = ho + mo
+        pc, vc, fc, po, vo, io, bo, wind = struct.unpack_from('<7iI', d, o)
+        out.append({'hash': hsh, 'name': mdl53.cstr(d, o + 32),
+                    'parents': list(struct.unpack_from('<%dh' % pc, d, o + po)),
+                    'vertices': [struct.unpack_from('<i3f', d, o + vo + 16 * k) for k in range(vc)],
+                    'faces': [struct.unpack_from('<3h', d, o + io + 6 * k) for k in range(fc)],
+                    'ccw': wind,
+                    'bounds': [struct.unpack_from('<8f', d, o + bo + 32 * k) for k in range(fc)]})
+    return out
+
+
+def ui_panel_hash(name):
+    # The client's RUI mesh hash: MurmurHash3 x86_32, seed 0, bytes ANDed with 0xDF.
+    m = 0xffffffff
+    rol = lambda x, r: ((x << r) | (x >> (32 - r))) & m
+    mix = lambda k: (rol((k * 0xcc9e2d51) & m, 15) * 0x1b873593) & m
+    data = bytes(c & 0xdf for c in name.encode('latin-1'))
+    h, full = 0, len(data) // 4 * 4
+    for i in range(0, full, 4):
+        h = (rol(h ^ mix(int.from_bytes(data[i:i + 4], 'little')), 13) * 5 + 0xe6546b64) & m
+    h ^= mix(int.from_bytes(data[full:], 'little')) ^ (len(data) + 1)  # the nul counts
+    h ^= h >> 16; h = (h * 0x85ebca6b) & m; h ^= h >> 13; h = (h * 0xc2b2ae35) & m
+    return h ^ (h >> 16)
+
+
+def uipanel_lines(panel, bones):
+    fmt = lambda v: '%.9g' % v  # exact float round trip
+    # The compiler derives the hash from the name; only an unusual one is written.
+    hsh = '' if panel['hash'] == ui_panel_hash(panel['name']) else ' 0x%08x' % panel['hash']
+    lines = ['$uipanel "%s"%s' % (panel['name'], hsh), '{']
+    lines += ['	parent "%s"' % bones[b]['name'] for b in panel['parents']]
+    lines += ['	vertex %d %s %s %s' % (v[0], fmt(v[1]), fmt(v[2]), fmt(v[3])) for v in panel['vertices']]
+    for k, f in enumerate(panel['faces']):
+        lines.append('	face %d %d %d%s' % (f[0], f[1], f[2], ' ccw' if panel['ccw'] >> k & 1 else ''))
+    lines += ['	bounds ' + ' '.join(fmt(v) for v in b) for b in panel['bounds']]
+    lines.append('}')
+    return lines
+
+
 def jigglebone_lines(name, j):
     """$jigglebone block for a decoded mstudiojigglebone_t (angles stored in radians)."""
     f = j['flags']
@@ -690,6 +735,9 @@ def decompile(path, outdir):
         o = h['localattachmentindex'] + i * mdl53.size(mdl53.ATTACH_FIELDS)
         att_names.append(mdl53.cstr(d, o + struct.unpack_from('<i', d, o)[0]))
     qc.extend(procedural_files(d, h, bones, att_names, outdir, base))
+    # RUI panel meshes, written out in full (with the original hash)
+    for panel in decode_ui_panels(d, h):
+        qc.extend(uipanel_lines(panel, bones))
     # attachments
     for i in range(h['numlocalattachments']):
         o = h['localattachmentindex'] + i * 0x5C

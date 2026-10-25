@@ -10,6 +10,28 @@
 
 namespace r2c {
 
+// The hash the client looks RUI panel meshes up by (a weapon script's "mesh" name):
+// MurmurHash3 x86_32 over the name with every byte ANDed with 0xDF (case folding),
+// seed 0, with the terminating nul counted in the length. Reproduces all 163 retail
+// mp_common panel hashes.
+static uint32_t UIPanelHash(const std::string& name) {
+    auto rol = [](uint32_t x, int r) { return (x << r) | (x >> (32 - r)); };
+    auto mix = [&](uint32_t k) { return rol(k * 0xcc9e2d51u, 15) * 0x1b873593u; };
+    uint32_t h = 0, len = 0;
+    size_t i = 0;
+    for (; i + 4 <= name.size(); i += 4, len += 4) {
+        uint32_t w = 0;
+        for (int b = 0; b < 4; b++) w |= static_cast<uint32_t>(static_cast<uint8_t>(name[i + b])) << (8 * b);
+        h = rol(h ^ mix(w & 0xdfdfdfdfu), 13) * 5 + 0xe6546b64u;
+    }
+    uint32_t t = 0;
+    for (size_t b = 0; i + b < name.size(); b++) t |= static_cast<uint32_t>(static_cast<uint8_t>(name[i + b]) & 0xdf) << (8 * b);
+    len += static_cast<uint32_t>(name.size() - i) + 1;  // the length includes the nul
+    h ^= mix(t) ^ len;
+    h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13; h *= 0xc2b2ae35u;
+    return h ^ (h >> 16);
+}
+
 void EncodeAnimations(BuildContext& ctx);
 void ProcessIKRules(BuildContext& ctx);
 void BuildCollisionModel(BuildContext& ctx);
@@ -514,6 +536,27 @@ void BuildContext::FinalizeBones() {
         int used = out.bones[k].flags & BONE_USED_BY_ANYTHING;
         markChain(parent, used);
         if (attach < 0) markChain(aim, used);
+    }
+    // RUI panel meshes
+    for (auto& qp : qc.uiPanels) {
+        CUIPanel p;
+        p.name = qp.name;
+        p.hash = qp.hasHash ? qp.hash : UIPanelHash(qp.name);
+        p.ccw = qp.ccw;
+        p.bounds = qp.bounds;
+        for (auto& name : qp.parents) p.parents.push_back(needBone(name, qp.name));
+        for (auto& v : qp.vertices) {
+            if (v.parent < 0 || v.parent >= static_cast<int>(p.parents.size()))
+                Fatal("$uipanel %s: vertex parent slot %d out of range", qp.name.c_str(), v.parent);
+            p.vertices.push_back({v.parent, v.pos});
+        }
+        for (auto& f : qp.faces) {
+            for (int i : f)
+                if (i < 0 || i >= static_cast<int>(p.vertices.size()))
+                    Fatal("$uipanel %s: face vertex %d out of range", qp.name.c_str(), i);
+            p.faces.push_back({static_cast<int16_t>(f[0]), static_cast<int16_t>(f[1]), static_cast<int16_t>(f[2])});
+        }
+        out.uiPanels.push_back(std::move(p));
     }
     for (auto& bf : qc.boneFollowers) {
         int k = FindBone(bf);

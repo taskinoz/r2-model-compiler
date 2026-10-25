@@ -120,6 +120,7 @@ private:
     void CmdCollisionText();
     void CmdJiggleBone();
     void CmdProceduralBones();
+    void CmdUIPanel();
     Vec3 helperBase_;  // current <basepos> while reading a .vrd file
     void CmdKeyValues(std::string& out);
     int ParseContents(int base);
@@ -1442,6 +1443,53 @@ void Parser::CmdProceduralBones() {
     }
 }
 
+// $uipanel "name" [hash] { parent "bone" | vertex <parent> x y z | face a b c [ccw] |
+//                          bounds x0 x1 x2 x3 y0 y1 y2 y3 }
+void Parser::CmdUIPanel() {
+    QcUIPanel p;
+    p.name = S("panel name");
+    if (!tk_.Get(true)) Fatal("%s: expected '{' for $uipanel", tk_.Where().c_str());
+    if (T() != "{") {
+        p.hash = static_cast<uint32_t>(std::strtoul(T().c_str(), nullptr, 0));
+        p.hasHash = true;
+        if (!tk_.Get(true) || T() != "{") Fatal("%s: expected '{' for $uipanel", tk_.Where().c_str());
+    }
+    while (tk_.Get(true)) {
+        if (T() == "}") break;
+        if (Is("parent")) {
+            p.parents.push_back(S("bone"));
+        } else if (Is("vertex")) {
+            QcUIPanel::Vertex v;
+            v.parent = I("parent slot");
+            v.pos = V3();
+            p.vertices.push_back(v);
+        } else if (Is("face")) {
+            std::array<int, 3> f = {I("a"), I("b"), I("c")};
+            if (Avail()) {
+                tk_.Get(false);
+                if (Is("ccw")) {
+                    // the winding bitfield is 32 bits wide
+                    if (p.faces.size() >= 32) Fatal("$uipanel %s: only the first 32 faces can be ccw", p.name.c_str());
+                    p.ccw |= 1u << p.faces.size();
+                }
+                else tk_.Unget();
+            }
+            p.faces.push_back(f);
+        } else if (Is("bounds")) {
+            std::array<float, 8> b;
+            for (auto& v : b) v = F("bound");
+            p.bounds.push_back(b);
+        } else {
+            Fatal("%s: unknown $uipanel option \"%s\"", tk_.Where().c_str(), T().c_str());
+        }
+    }
+    if (p.parents.empty() || p.parents.size() > 2) Fatal("$uipanel %s: needs one or two parent bones", p.name.c_str());
+    if (p.vertices.size() > 256) Fatal("$uipanel %s: at most 256 vertices", p.name.c_str());
+    if (p.faces.size() > 64) Fatal("$uipanel %s: at most 64 faces", p.name.c_str());
+    if (p.bounds.size() != p.faces.size()) Fatal("$uipanel %s: needs one bounds line per face", p.name.c_str());
+    m_.uiPanels.push_back(p);
+}
+
 void Parser::CmdJiggleBone() {
     QcJiggleBone j;
     j.bone = S("bone");
@@ -1674,6 +1722,7 @@ void Parser::Register() {
     };
     h["$jigglebone"] = [&] { CmdJiggleBone(); };
     h["$proceduralbones"] = [&] { CmdProceduralBones(); };
+    h["$uipanel"] = [&] { CmdUIPanel(); };
     h["$attachment"] = [&] { CmdAttachment(); };
     h["$hboxset"] = [&] {
         QcHitboxSet s;

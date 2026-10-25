@@ -2,7 +2,7 @@
 
 The compiler is packaged and usable for Titanfall 2 static props, physics props,
 and skinned/animated models, including Respawn root motion, bone scale animation,
-IK rules, sequence weight lists and procedural bones. See README.md for commands and VALIDATION.md for exact evidence and
+IK rules, sequence weight lists, procedural bones and UI panel meshes. See README.md for commands and VALIDATION.md for exact evidence and
 limitations.
 
 ## Deliverables
@@ -15,7 +15,7 @@ limitations.
 
 ## Verified
 
-- Both CTest groups pass, including fourteen Python regression tests.
+- Both CTest groups pass, including fifteen Python regression tests.
 - Fresh full decompile + compile of all 602 retail mp_common models with the release
   executable: no compile failures or exceptions, and 560/602 match the comparison
   (bones, meshes, sequence/animation flags, pose keys and weight lists, animation
@@ -31,17 +31,23 @@ limitations.
   rebuilt drone_frag matches retail's scale-driven head lights, which a control
   without scale misses by 21-23 units. Quaternion-interpolation and aim-at procedural
   bones animate on the client (screenshots); the server's attachment queries ignore
-  procedural bones.
+  procedural bones. A rebuilt R-201 viewmodel whose ammo-counter panel was renamed
+  (`models/r2c_test/My_Counter_Panel`, looked up from a weapon script in lower case)
+  shows the counter, through the compiler's derived panel hash.
+- All 35 retail models with UI panels (163 panels) round-trip with panel blocks
+  byte-identical to retail, hashes included.
 - Crowbar's command-line invocation is reproduced in a regression test. Its GUI
   was not automated.
 
 ## Reports
 
 - test-output/release-corpus9/results.json: current full run with the release build.
-- test-output/prowler-ingame, scale-ingame, proc-ingame: in-game pose, root-motion, scale and
-  procedural-bone evidence.
+- test-output/prowler-ingame, scale-ingame, proc-ingame, ui-ingame: in-game pose, root-motion,
+  scale, procedural-bone and UI panel evidence.
+- test-output/ui-corpus2: round trip of the 35 retail models with UI panels.
 - test-output/corpus-heading, corpus-euler: frame-movement yaw A/B runs.
-- Earlier runs (release-corpus*, corpus-final) used older comparisons.
+- Earlier runs (release-corpus2-8, corpus-v2/coll/final/fixed) used older comparisons;
+  only their results.json and logs are kept (work folders removed for disk space).
 - tools/recheck_corpus.py recompiles unedited cached source exports, checking the
   retail input stamps and exporter/comparison tool hashes first.
 
@@ -54,12 +60,13 @@ through decompilation; named $animation flags no longer copied onto sequences; b
 scale animation (SMD extension and DMX); jointed map-collision blocks; retail bone
 fields; IK rules (with studiomdl's range quirks reproduced); separate sequence weight
 lists (`seqweights`); jiggle bones through decompilation and `$proceduralbones`;
-parent flag propagation limited to "used by" bits. tools/ingame_test.py gained
+parent flag propagation limited to "used by" bits; `ikfixup`; UI panel meshes
+(`$uipanel`) with the client's hash (case-folded MurmurHash3, found in client.dll). tools/ingame_test.py gained
 --motion, --pose-attachments and --probe-times.
 
 ## Remaining parity work
 
-UI panel meshes remain incomplete; axis-interpolation bones are compiled but unverified
+Axis-interpolation bones are compiled but unverified
 in game. `ikfixup` is compiled and covered by a regression test only (it is baked into
 animations, so retail data cannot confirm Respawn's exact behaviour).
 The retail yaw split between the frame-movement track and the root bone cannot be

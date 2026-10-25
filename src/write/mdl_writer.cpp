@@ -548,8 +548,46 @@ void MdlWriter::WritePoseParams() {
 }
 
 void MdlWriter::WriteIncludeModels() {
-    b_.Align(8);
+    // RUI panel meshes come first: header array (hash, offset), then each mesh 16-byte
+    // aligned: 32-byte header, name, parents, faces, vertices (16-aligned), bounds.
+    b_.Align(4);
+    size_t panelStart = b_.Tell();
     HdrHere(H_UIPANELOFFSET);
+    Hdr(H_UIPANELCOUNT, static_cast<int>(m_.uiPanels.size()));
+    size_t headers = b_.Reserve(8 * m_.uiPanels.size());
+    for (size_t i = 0; i < m_.uiPanels.size(); i++) {
+        const CUIPanel& p = m_.uiPanels[i];
+        b_.Align(16);
+        size_t mesh = b_.Tell();
+        b_.PatchAt<uint32_t>(headers + i * 8, p.hash);
+        b_.PatchI32(headers + i * 8 + 4, static_cast<int32_t>(mesh - (headers + i * 8)));
+        int pc = static_cast<int>(p.parents.size()), vc = static_cast<int>(p.vertices.size());
+        int fc = static_cast<int>(p.faces.size());
+        int vo = static_cast<int>((32 + p.name.size() + 1 + 2 * pc + 6 * fc + 15) & ~size_t(15));
+        int io = vo - 6 * fc, po = io - 2 * pc, bo = vo + 16 * vc;
+        for (int v : {pc, vc, fc, po, vo, io, bo}) b_.I32(v);
+        b_.U32(p.ccw);
+        for (char c : p.name) b_.U8(static_cast<uint8_t>(c));
+        b_.U8(0);
+        while (b_.Tell() < mesh + po) b_.U8(0);
+        for (int bone : p.parents) b_.I16(static_cast<int16_t>(bone));
+        for (auto& f : p.faces)
+            for (int16_t v : f) b_.I16(v);
+        while (b_.Tell() < mesh + vo) b_.U8(0);
+        for (auto& v : p.vertices) {
+            b_.I32(v.first);
+            b_.V3(v.second);
+        }
+        for (auto& bd : p.bounds)
+            for (float f : bd) b_.F32(f);
+    }
+    // retail models (which have no include models) point the include index at the panels
+    if (m_.includeModels.empty()) {
+        b_.PatchI32(H_INCLUDEMODELINDEX, static_cast<int32_t>(panelStart));
+        Hdr(H_NUMINCLUDEMODELS, 0);
+        return;
+    }
+    b_.Align(8);
     HdrHere(H_INCLUDEMODELINDEX);
     Hdr(H_NUMINCLUDEMODELS, static_cast<int>(m_.includeModels.size()));
     for (auto& im : m_.includeModels) {

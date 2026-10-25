@@ -69,7 +69,7 @@ separate work folders.
 
 The comparison covers bone names and parents, bind positions, texture names,
 triangle counts, sequence names, sampled animation world positions, collision
-volume and selected attachment/collision counts. A clean comparison is evidence
+volume, UI panels and selected attachment/collision counts. A clean comparison is evidence
 for those fields; in-game behavior needs separate testing.
 
 `tools/ingame_test.py` creates a separate Northstar profile, loads the supplied
@@ -85,7 +85,9 @@ quick way to compare a rebuilt model's pose with the original side by side.
 `--motion seq1,seq2` plays each sequence with `Anim_PlayWithRefPoint`, so the
 entity follows the sequence's root motion, and records origin, yaw and the probe
 attachment at 0/25/50/75/95% of each sequence in the report. `--physics`
-spawns moving props above the floor and checks that they fall. `--report file.json`
+spawns moving props above the floor and checks that they fall. `--extra-file
+local=gamepath` mounts another file in the test mod, such as a weapon script that
+names a new UI panel. `--report file.json`
 writes the validation result; missing spawns, script errors, timeouts and missing
 screenshots return a nonzero exit code. `--npc --ragdoll` exercises an NPC death
 path, but a successful spawn/death call alone does not prove ragdoll physics.
@@ -134,5 +136,27 @@ translation as a Respawn frame-movement track, as retail models do; `LX`/`LY`/`L
 `LZR` motion extraction is stored the same way. Add `$legacymovement` to the QC to
 write Valve-style piecewise movement records instead.
 
-Limitations: UI panel meshes remain incomplete. Titanfall 1 and Apex model files are not direct compiler inputs;
+UI panels (RUI meshes): the quads a weapon draws its screens on (ammo counters,
+sights). A weapon script's `UiData` block names one with `"mesh" "models/..."`, and the
+client finds it by a hash of that name. The compiler derives the hash (MurmurHash3
+x86_32, seed 0, each byte ANDed with 0xDF so case does not matter, the terminating nul
+counted in the length), so a new panel needs only a name:
+
+```
+$uipanel "models/weapons/attachments/my_counter"
+{
+	parent "def_c_screen"          // one or two bones; vertices name a slot (0 or 1)
+	vertex 0  0 -1.2 1.1           // slot x y z, local to the slot's bone
+	vertex 0  0  1.2 1.1
+	vertex 0  0  1.2 0.3
+	face 0 1 2 ccw                 // three corners of a parallelogram (the fourth is
+	bounds 0 1 1 0  0 0 1 1        //   a + c - b); bounds: x0..x3 y0..y3 per face
+}
+```
+
+A hex value after the name (`$uipanel "name" 0x1234abcd`) overrides the hash.
+At most 256 vertices and 64 faces; only the first 32 faces can be `ccw`.
+Decompiled retail panels are written without a hash when it matches the name's.
+
+Limitations: Titanfall 1 and Apex model files are not direct compiler inputs;
 this tool consumes QC/SMD/DMX and targets Titanfall 2 v53 output.

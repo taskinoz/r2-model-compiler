@@ -2,15 +2,16 @@
 
 This build is usable for Titanfall 2 static props, moving physics props and skinned,
 animated models, including Respawn root motion (frame movement), bone scale
-animation, IK rules, sequence weight lists and procedural bones. It is not a claim of complete Valve/Respawn feature parity.
+animation, IK rules, sequence weight lists, procedural bones and UI panel meshes. It is not a claim of complete Valve/Respawn feature parity.
 
 Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime).
-SHA-256: `1bdc9fe1c574cccdbe875a0bce0146b615051998ccc10ca954bd266bdb349f32`.
+SHA-256: `90c58cc2374b1e3e4618b90c8c3ef940f9686de797af1ccd847336d5540af009`.
 
 ## Automated checks
 
-- Both CTest groups pass: the C++ collision hull suite and fourteen Python compiler/
-  corpus-runner regression tests (including bone scale, IK rules and procedural bones).
+- Both CTest groups pass: the C++ collision hull suite and fifteen Python compiler/
+  corpus-runner regression tests (including bone scale, IK rules, procedural bones and
+  UI panels).
 - Blender Source Tools exports from the same scene compile as SMD and binary DMX
   2, 3, 4, 5 and 9. All six outputs match in the compared fields, including two
   physics solids with total volume 24,576 cubic inches.
@@ -31,8 +32,12 @@ Reports:
 
 - `test-output/release-corpus9/results.json` and `release-corpus9.log`: full run
   (fresh decompile and compile) with the previous build (SHA-256 `0b386047...`); the
-  executable above only adds `ikfixup`, which retail models do not use, and matched
-  on a five-model spot run (`test-output/fixup-spot`).
+  executable above adds `ikfixup`, which retail models do not use (matched on a
+  five-model spot run, `test-output/fixup-spot`), and UI panels, which only the 35
+  models below contain.
+- `test-output/ui-corpus2`: all 35 retail models with UI panels (163 panels), fresh
+  decompile and compile with the executable above: 35/35 match, and every panel block
+  (header hash, bones, vertices, faces, winding and bounds) is byte-identical to retail.
 - `test-output/corpus-heading` and `test-output/corpus-euler`: A/B runs of the two
   frame-movement yaw definitions (heading kept: 7 vs 9 animation differences).
 
@@ -56,7 +61,8 @@ counts by LOD, sequence labels, sequence flags and blend pose keys, animation fl
 and frame counts, sampled world positions of non-delta animations (with frame
 movement applied), sampled raw local values of delta animations, sampled bone scale, IK rules (type,
 chain, bone, slot, ranges, footstep parameters, targets and sampled error values),
-sequence weight lists, procedural bones (type and parameters),
+sequence weight lists, procedural bones (type and parameters), UI panels (hash, name,
+parent bones, vertices, faces, winding, bounds),
 physics solid counts/volume, attachment count, the map-collision header count, the
 face/plane/edge/vertex counts of every collision piece grouped by owning bone, and
 each bone's collision reference. Entry order within the collision block is not
@@ -115,6 +121,13 @@ re-quantization: errors are recomputed from the decoded poses. None is claimed l
   stays at the bind pose. Server-side attachment queries do not evaluate procedural
   bones, so this was checked visually on the client. Axis interpolation was not
   checked in game.
+- **UI panels** (`test-output/ui-ingame/`): the R-201 viewmodel, mounted over
+  `ptpov_rspn101`. Rebuilt from decompiled source it shows the ammo counter
+  (`A_rebuilt.png`); with the panel hashes zeroed (`B_nohash.png`) or the panels
+  removed (`C_nopanels.png`) the counter is gone. In `custom/D_custom.png` the
+  counter panel was renamed `models/r2c_test/My_Counter_Panel` with no hash given, and
+  a weapon-script override names it in lower case: the counter shows, so the derived
+  hash (case-folded) is what the client looks up.
 
 Structured reports and screenshots are under `test-output/`:
 `physics-ingame-report.json`, `animation-ingame-report.json`,
@@ -160,6 +173,9 @@ Structured reports and screenshots are under `test-output/`:
   ancestors keep their animation.
 - `ikfixup`: studiomdl's two-bone solve (Studio_SolveIK) re-poses the leg so the foot
   holds its contact position, using the intended frame-based weight curve.
+- UI panel meshes (`$uipanel`): the RUI header/mesh layout, and the client's panel
+  hash, read from client.dll's lookup: MurmurHash3 x86_32, seed 0, bytes ANDed with
+  0xDF, length counting the nul. It reproduces all 163 retail hashes.
 - Retail bone fields: zero qAlignment and 1/2048 scalescale.
 - Map-collision block for jointed models (bone references), bevels only where
   dot(n0, n1) < 0.26, at most 63 faces per piece, and retail bone references
@@ -167,7 +183,7 @@ Structured reports and screenshots are under `test-output/`:
 
 ## Remaining feature limits
 
-UI panel meshes remain incomplete. `ikfixup` is compiled (footstep/world rules); it
+`ikfixup` is compiled (footstep/world rules); it
 bakes into animation data, so retail models cannot show its effect and it is verified
 by a regression test (planted foot held within 0.1 units, bone lengths preserved).
 Root motion is written as Respawn frame-movement tracks (`$legacymovement` selects

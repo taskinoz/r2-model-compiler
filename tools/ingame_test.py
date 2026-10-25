@@ -224,6 +224,8 @@ def main():
     ap.add_argument("--shot-delay", type=float, default=12)
     ap.add_argument("--keep-open", action="store_true")
     ap.add_argument("--report", help="write a JSON validation report")
+    ap.add_argument("--extra-file", action="append", default=[], metavar="LOCAL=GAMEPATH",
+                    help="also mount a non-model file in the test mod (for example a weapon script)")
     ap.add_argument("models", nargs="+")
     a = ap.parse_args()
     if a.npc and a.physics:
@@ -254,6 +256,11 @@ def main():
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(local, dst)
         precache.append('    file.models.append( $"%s" )\n    PrecacheModel( $"%s" )' % (gamepath, gamepath))
+    for spec in a.extra_file:
+        local, gamepath = spec.split("=", 1)
+        dst = os.path.join(mod, "mod", gamepath)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(local, dst)
     sv = SERVER_SCRIPT.replace("%PRECACHE%", "\n".join(precache)).replace("%DIST%", str(a.dist)) \
         .replace("%SPACING%", str(a.spacing)).replace("%SEQ%", a.sequence)
     sv = sv.replace("%LATERAL%", str(a.lateral))

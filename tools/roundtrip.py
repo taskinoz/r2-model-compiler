@@ -152,6 +152,9 @@ def summary(path):
     # bone references: the index only matters when there are no pieces (0 vs 0xFFFF)
     s['boneColl'] = [(b['collisionIndex'] if not b['collisionCount'] else 'ref', b['collisionCount']) for b in bones]
     s['pertri'] = h['perTriAABBLeafCount']
+    s['ui'] = [(u['hash'], u['name'], [bones[b]['name'] for b in u['parents']],
+                [(v[0],) + tuple(round(x, 3) for x in v[1:]) for v in u['vertices']], u['faces'], u['ccw'],
+                [tuple(round(x, 3) for x in b) for b in u['bounds']]) for u in dc.decode_ui_panels(d, h)]
     # procedural bones: type per bone, and jiggle parameters
     def flat(v):
         if isinstance(v, dict):
@@ -237,6 +240,8 @@ def compare(a, b):
         pa, pb = a.get('proc', []), b.get('proc', [])
         issues.append('procedural bones differ (%d vs %d, e.g. %s)' % (len(pa), len(pb), next(
             (x[0] for x, y in zip(pa + [('',)], pb + [('',)]) if x != y), '')))
+    if a.get('ui', []) != b.get('ui', []):
+        issues.append('ui panels differ (%d vs %d)' % (len(a.get('ui', [])), len(b.get('ui', []))))
     if a['attach'] != b['attach']:
         issues.append('attachments %d vs %d' % (a['attach'], b['attach']))
     if a['coll'] != b['coll']:
