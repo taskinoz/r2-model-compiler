@@ -180,6 +180,28 @@ void BuildContext::ConvertAnimation(const SrcInst& s, int frame, float scale, co
         dest[k].pos = bm.Origin();
         ClipRotations(dest[k].rot);
     }
+    // Where a source bone is the model bone under the same parent with no realignment,
+    // take its local values directly. The world round trip above adds float noise
+    // (1e-4 to 3e-3 on bones thousands of units out), enough to turn a bone at its
+    // bind pose into an animated one.
+    auto identity = [](const Mat3x4& m) {
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 4; c++)
+                if (std::fabs(m.m[r][c] - (r == c ? 1.f : 0.f)) > 1e-5f) return false;
+        return true;
+    };
+    int nf = static_cast<int>(s.frames.size());
+    int fr = frame && nf ? frame % nf : 0;
+    for (size_t k = 0; k < bones.size(); k++) {
+        int p = bones[k].parent, q = s.globalToLocal[k];
+        if (p < 0 || q < 0 || scale != 1.f) continue;
+        int sp = s.bones[q].parent;
+        if (sp < 0 || s.localToGlobal[sp] != p) continue;
+        if (!identity(bones[k].srcRealign) || !identity(bones[p].srcRealign)) continue;
+        dest[k].pos = s.frames[fr][q].pos;
+        dest[k].rot = s.frames[fr][q].rot;
+        ClipRotations(dest[k].rot);
+    }
 }
 
 void BuildContext::BuildBones() {

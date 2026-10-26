@@ -1,6 +1,7 @@
 """Regression coverage for interrupted corpus runs and duplicate model names."""
 import contextlib
 import io
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -10,9 +11,34 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import roundtrip
+import structdiff
 
 
 class CorpusReports(unittest.TestCase):
+    def test_structdiff_checks_duplicate_model_names(self):
+        scratch = Path(__file__).resolve().parents[1] / 'test-output'
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch) as temporary:
+            root = Path(temporary)
+            report = {}
+            for i, folder in enumerate(('a', 'b')):
+                source = root / folder / 'same.mdl'
+                source.parent.mkdir()
+                source.write_bytes(bytes([i]))
+                report[str(source)] = {'status': 'ok'}
+                suffix = hashlib.sha256(str(source).encode()).hexdigest()[:12]
+                work = root / ('same-' + suffix)
+                work.mkdir()
+                (work / 'recompiled.mdl').write_bytes(bytes([i]))
+            (root / 'results.json').write_text(json.dumps(report))
+            output = root / 'diff.json'
+            argv = ['structdiff.py', '--report', str(root / 'results.json'), '--out', str(output)]
+            with mock.patch.object(sys, 'argv', argv), \
+                 mock.patch.object(structdiff, 'dump', side_effect=lambda data: {'value': data[0]}), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                structdiff.main()
+            self.assertEqual(json.loads(output.read_text()), {'compared': 2, 'fields': {}})
+
     def test_checkpoint_resume_and_tool_change(self):
         scratch = Path(__file__).resolve().parents[1] / 'test-output'
         scratch.mkdir(exist_ok=True)

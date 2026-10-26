@@ -154,6 +154,12 @@ struct QcIKRule {
     Vec3 pos;
     Quat q;
     float endHeight = 0;
+    // "errors file" (r2c extension): the stored error stream (six scales, then pos xyz
+    // and angles xyz per frame), used instead of errors computed from the animation
+    bool hasErrors = false;
+    bool hasStoredTarget = false;  // storedtarget: preserve the target independently of the pose
+    float errorScales[6] = {};
+    std::vector<std::array<float, 6>> errors;
 };
 
 struct QcWeightList {
@@ -195,6 +201,14 @@ struct QcAnimation {
     bool fudgeLoop = false;
     bool noAutoIK = false;
     bool rawDelta = false;  // "delta": source frames are local deltas (STUDIO_DELTA on the animation)
+    // "posscale bone s" (r2c extension): the stored position step for a bone, which a
+    // decompiled animation keeps so it re-quantizes onto retail's grid
+    std::vector<std::pair<std::string, float>> posScales;
+    // "fmtrack file" (r2c extension): a stored frame-movement track (four scales, then
+    // x y z yaw per frame), used as is instead of being extracted from the root bones
+    bool hasFmTrack = false;
+    Vec4 fmScales;
+    std::vector<Vec4> fmTrack;
     bool implied = false;
     bool isOverride = false;  // $declareanimation
     std::vector<QcAnimCmd> cmds;
@@ -400,6 +414,7 @@ struct QcModelDef {
     std::vector<std::string> sourceFiles;  // $sourcefile (r2c extension): the stored source-file list
     std::vector<std::string> nodes;  // $node (r2c extension): node names in table order
     int localNodeUnk = 0;            // $localnodeunk (r2c extension): header field 0x108
+    std::vector<std::pair<std::string, Vec3>> boneRotScales;  // $bonerotscale (r2c extension)
     float headerMass = -1;  // top-level $mass (r2c extension): header mass of a model without physics
     bool illumSet = false;
     Vec3 illumPosition;

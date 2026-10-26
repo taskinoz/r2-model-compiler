@@ -71,6 +71,8 @@ struct WAnim {
     std::vector<float> weight;    // per bone
     std::vector<float> posWeight; // per bone
     std::vector<CMovement> movements;
+    bool fixedFmScales = false;  // frameMove came from an fmtrack file with its scales
+    Vec4 fmScales;
     std::vector<Vec4> frameMove;  // per frame: x, y, z, yaw (degrees); empty when unused
     std::vector<CIKRule> ikRules;
     Vec3 bmin, bmax;

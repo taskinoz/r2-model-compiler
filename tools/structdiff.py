@@ -12,9 +12,11 @@ usage: python tools/structdiff.py --report results.json [--out structdiff.json]
 """
 import argparse
 import collections
+import hashlib
 import json
 import math
 import os
+from pathlib import Path
 import re
 import struct
 import sys
@@ -221,18 +223,20 @@ def main():
     ap.add_argument('--out', help='write the full comparison as JSON')
     ap.add_argument('--examples', type=int, default=3)
     a = ap.parse_args()
-    r = json.load(open(a.report))
+    r = json.loads(Path(a.report).read_text())
     r = r.get('results', r)
     work = os.path.dirname(os.path.abspath(a.report))
     fields = collections.defaultdict(lambda: {'models': 0, 'examples': []})
     compared = 0
+    names = collections.Counter(os.path.splitext(os.path.basename(src))[0] for src in r)
     for src in sorted(r):
         name = os.path.splitext(os.path.basename(src))[0]
-        rebuilt = os.path.join(work, name, 'recompiled.mdl')
+        suffix = '-' + hashlib.sha256(src.encode()).hexdigest()[:12] if names[name] > 1 else ''
+        rebuilt = os.path.join(work, name + suffix, 'recompiled.mdl')
         if not os.path.exists(rebuilt) or not os.path.exists(src):
             continue
         try:
-            x, y = dump(open(src, 'rb').read()), dump(open(rebuilt, 'rb').read())
+            x, y = dump(Path(src).read_bytes()), dump(Path(rebuilt).read_bytes())
         except Exception as e:  # noqa: BLE001
             fields['<parse error>']['models'] += 1
             fields['<parse error>']['examples'].append((name, str(e)))
@@ -254,7 +258,7 @@ def main():
         for e in v['examples']:
             print('         ', e)
     if a.out:
-        json.dump({'compared': compared, 'fields': fields}, open(a.out, 'w'), indent=1)
+        Path(a.out).write_text(json.dumps({'compared': compared, 'fields': fields}, indent=1))
 
 
 if __name__ == '__main__':

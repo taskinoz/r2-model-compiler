@@ -137,6 +137,9 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
 - `posscale` is per bone for the whole animation (identical in every RLE section).
 - One-frame chains (the trailing section and single-frame animations) are always raw.
   Retail never uses flags 0x0c.
+- A section's constant-value decision excludes the frame shared with the next
+  section. The next section supplies that boundary pose; a jump there does not make
+  the preceding section's position or rotation animated.
 - Retail never writes a non-raw record whose three position value pointers are all
   null; partially null pointers are common.
 
@@ -150,6 +153,9 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
   within about 0.003-0.04 degrees. The root bone keeps pitch, roll and a small
   residual.
 - Delta animations may carry an all-zero track (flags 0x40004).
+- The heading rule approximates retail's split between root pose and motion; the
+  original track and its four scales can instead be retained separately without
+  baking motion into the root bones and extracting it again.
 
 ## Bone scale animation
 
@@ -157,8 +163,9 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
   value pointers. Decoded scale = bone scale + value * bone scalescale (delta
   animations add no bone scale). Neutral raw scale is (1, 1, 1).
 - Bone `scalescale` is always 1/2048 and bone `qAlignment` is always zero in retail.
-- Animation flag 0x20000 (STUDIO_HAS_SCALE) is set on exactly the animations whose scale
-  differs from 1, and on the sequences that use them.
+- Animation flag 0x20000 (STUDIO_HAS_SCALE) normally marks animations whose scale
+  differs from 1, and the sequences that use them. `titan_buddy_embark` is an exception:
+  all 54 animations have the flag although only one scales a bone.
 
 ## Animation and sequence flags
 
@@ -176,6 +183,10 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
 - Rules sit between an animation's data and its frame-movement block.
 - Each compressed error block (`float scale[6]; short offset[6]` plus 6 RLE streams)
   follows its rule and covers the whole animation, even a sectioned one.
+- Stored target transforms and error streams are independent data. Recomputing
+  them from decoded poses need not recover retail's values; a round trip can retain
+  the target, six scales and decoded samples instead. Zero scales describe zero
+  channels.
 - Rule types seen: release (mostly studiomdl's automatic release), footstep, unlatch,
   attachment.
   - Footstep rules have height 50, radius 15, floor 0 and endHeight -100.

@@ -58,6 +58,22 @@ int QcModelDef::TextureIndex(const std::string& rawName, bool add) {
 
 namespace {
 
+std::vector<float> ReadAnimationData(const std::string& path, size_t width) {
+    std::ifstream in(std::filesystem::u8path(path));
+    std::vector<float> values;
+    for (;;) {
+        in >> std::ws;
+        if (in.eof()) break;
+        float value;
+        if (!(in >> value) || !std::isfinite(value))
+            Fatal("malformed animation data file \"%s\"", path.c_str());
+        values.push_back(value);
+    }
+    if (values.size() < width * 2 || values.size() % width)
+        Fatal("malformed animation data file \"%s\"", path.c_str());
+    return values;
+}
+
 // QAngle (pitch, yaw, roll) degrees -> RadianEuler (roll, pitch, yaw) radians
 RadianEuler QAngleToRadianEuler(float p, float y, float r) { return RadianEuler(DegToRad(r), DegToRad(p), DegToRad(y)); }
 
@@ -577,6 +593,23 @@ void Parser::ParseIKRule(QcIKRule& r) {
             r.radius = F("radius");
         else if (Is("contact"))
             r.contact = I("contact");
+        else if (Is("storedtarget")) {
+            r.pos = V3();
+            r.q.x = F("target quaternion x");
+            r.q.y = F("target quaternion y");
+            r.q.z = F("target quaternion z");
+            r.q.w = F("target quaternion w");
+            r.hasStoredTarget = true;
+        }
+        else if (Is("errors")) {
+            std::string name = S("ik error file");
+            std::string path = ResolveSource(name, "txt");
+            if (path.empty()) Fatal("%s: could not find ik error file \"%s\"", tk_.Where().c_str(), name.c_str());
+            std::vector<float> v = ReadAnimationData(path, 6);
+            for (int k = 0; k < 6; k++) r.errorScales[k] = v[k];
+            for (size_t i = 6; i < v.size(); i += 6) r.errors.push_back({v[i], v[i + 1], v[i + 2], v[i + 3], v[i + 4], v[i + 5]});
+            r.hasErrors = true;
+        }
         else if (Is("usesequence")) {
             r.useSequence = true;
             r.useSource = false;
@@ -782,6 +815,23 @@ bool Parser::ParseAnimationToken(QcAnimation& a) {
         // source frames are already local deltas (a decompiled delta animation); kept
         // out of the flags so it is not copied onto sequences like an authored option
         a.rawDelta = true;
+    } else if (Is("fmtrack")) {
+        std::string name = S("frame movement track file");
+        std::string path = ResolveSource(name, "txt");
+        if (path.empty()) Fatal("%s: could not find frame movement track \"%s\"", tk_.Where().c_str(), name.c_str());
+        std::vector<float> v = ReadAnimationData(path, 4);
+        a.fmScales = {v[0], v[1], v[2], v[3]};
+        a.fmTrack.clear();
+        for (size_t i = 4; i < v.size(); i += 4) a.fmTrack.push_back({v[i], v[i + 1], v[i + 2], v[i + 3]});
+        a.hasFmTrack = true;
+        a.flags |= STUDIO_FRAMEMOVEMENT;
+    } else if (Is("hasscale")) {
+        // r2c extension: HAS_SCALE even without scaled bones (titan_buddy_embark sets it
+        // on every animation)
+        a.flags |= STUDIO_HAS_SCALE;
+    } else if (Is("posscale")) {
+        std::string bone = S("bone");
+        a.posScales.push_back({bone, F("position scale")});
     } else if (Is("defaultpose")) {
         // rsx marks animations that only hold the default pose; nothing to do
     } else if (ParseCmdlistToken(a.cmds)) {
@@ -1694,6 +1744,10 @@ void Parser::Register() {
         m_.jointContents.push_back({j, c});
     };
     h["$mass"] = [&] { m_.headerMass = F("mass"); };
+    h["$bonerotscale"] = [&] {
+        std::string bone = S("bone");
+        m_.boneRotScales.push_back({bone, V3()});
+    };
     h["$node"] = [&] { m_.nodes.push_back(S("node name")); };
     h["$localnodeunk"] = [&] { m_.localNodeUnk = I("value"); };
     h["$sourcefile"] = [&] { m_.sourceFiles.push_back(S("source file")); };

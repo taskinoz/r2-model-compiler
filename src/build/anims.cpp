@@ -102,7 +102,20 @@ double FitScale(const std::vector<double>& fitVals, double maxAbs, double floor)
             // retail clamps a few off-grid (raw-sourced) values, but never by much
             if (s * 32768 * 1.001 < maxAbs) continue;
             if (misses(sample, s, sampleAllowed) > sampleAllowed) continue;
-            if (misses(fitVals, s, allowed) <= allowed) return s;
+            if (misses(fitVals, s, allowed) <= allowed) {
+                // refine: least squares over the on-grid values, so the recovered step
+                // matches the original to float precision (an anchor read back from text
+                // is only good to about 1e-6, which on 16k-step values moves a level)
+                double vk = 0, kk = 0;
+                for (double v : fitVals) {
+                    double q = v / s, k = std::round(q);
+                    if (std::fabs(q - k) <= 0.05 && k != 0) {
+                        vk += v * k;
+                        kk += k * k;
+                    }
+                }
+                return kk > 0 ? vk / kk : s;
+            }
         }
     }
     return best;
@@ -744,9 +757,19 @@ void BuildContext::BuildAnimations() {
         // translation relative to frame 0; LX/LY/LZ/LZR extraction above produces a
         // fitted path. Either becomes a frame-movement track unless $legacymovement.
         bool exactRootMotion = (a.qc->flags & STUDIO_FRAMEMOVEMENT) && moves.empty() &&
-                               !qc.staticProp && !qc.legacyMovement;
-        // Delta animations keep their root deltas and carry an all-zero track (as retail does).
-        if (exactRootMotion && !(a.flags & STUDIO_DELTA)) {
+                               !qc.staticProp && !qc.legacyMovement && !a.qc->hasFmTrack;
+        if (a.qc->hasFmTrack && !qc.staticProp) {
+            // a stored track: the roots already exclude it, so neither is changed
+            if (static_cast<int>(a.qc->fmTrack.size()) != a.numFrames)
+                Fatal("animation %s: frame movement track has %d frames, the animation %d", a.name.c_str(),
+                      static_cast<int>(a.qc->fmTrack.size()), a.numFrames);
+            a.frameMove = a.qc->fmTrack;
+            a.fixedFmScales = true;
+            a.fmScales = a.qc->fmScales;
+            a.flags |= STUDIO_FRAMEMOVEMENT;
+            moves.clear();
+        } else if (exactRootMotion && !(a.flags & STUDIO_DELTA)) {
+            // (delta animations keep their root deltas and carry an all-zero track, as retail does)
             // Retail's yaw is the heading of the root's local Z axis (forward after the
             // default 90 degree rotation) relative to frame 0; pitch and roll stay in the root.
             auto heading = [](const Mat3x4& m) { return std::atan2(m.m[1][2], m.m[0][2]); };
@@ -790,7 +813,7 @@ void BuildContext::BuildAnimations() {
             }
             a.flags |= STUDIO_FRAMEMOVEMENT;
             moves.clear();
-        } else {
+        } else if (!a.fixedFmScales) {
             a.flags &= ~STUDIO_FRAMEMOVEMENT;
         }
         for (auto& mv : moves) {
@@ -893,13 +916,16 @@ static std::vector<float> PositionScales(const BuildContext& ctx, const WAnim& a
     return scales;
 }
 
-// Encodes frames [f0, f1] of an animation into one bone chain.
+// Encodes frames [f0, f1] of an animation into one bone chain. constFrames: how many
+// leading frames decide whether a value is constant (a section's own frames, without
+// the frame it shares with the next section, as retail decides it).
 static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a, const std::vector<float>& posScales,
-                                        int f0, int f1) {
+                                        int f0, int f1, int constFrames = -1) {
     const auto& bones = ctx.bones;
     const int nb = static_cast<int>(bones.size());
     bool delta = (a.flags & STUDIO_DELTA) != 0;
     int nf = f1 - f0 + 1;
+    const int nfConst = constFrames > 0 ? std::min(constFrames, nf) : nf;
     Buffer buf;
     size_t prevRec = SIZE_MAX;
     int written = 0;
@@ -943,7 +969,7 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
             rs[c] = EncodeRLE(rv[c]);
             if (!StreamIsZero(ps[c])) posZero = false;
             if (!StreamIsZero(rs[c])) rotZero = false;
-            for (int n = 1; n < nf; n++) {
+            for (int n = 1; n < nfConst; n++) {
                 if (pv[c][n] != pv[c][0]) posConst = false;
                 if (rv[c][n] != rv[c][0]) rotConst = false;
             }
@@ -1079,17 +1105,17 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
 
 // mstudioframemovement_t: float scale[4]; short offset[4]; then RLE streams for
 // x, y, z and yaw. Default scales match retail (128/32767 units, 180/32767 degrees).
-static std::vector<uint8_t> EncodeFrameMovement(const std::vector<Vec4>& fm) {
+static std::vector<uint8_t> EncodeFrameMovement(const std::vector<Vec4>& fm, const Vec4* given = nullptr) {
     Buffer b;
     b.Reserve(24);
-    Vec4 scales = FrameMovementScales(fm);
+    Vec4 scales = given ? *given : FrameMovementScales(fm);
     for (int c = 0; c < 4; c++) {
         float scale = (&scales.x)[c];
         b.PatchAt<float>(c * 4, scale);
         std::vector<int16_t> vals(fm.size());
         bool zero = true;
         for (size_t f = 0; f < fm.size(); f++) {
-            vals[f] = static_cast<int16_t>(std::clamp(std::round((&fm[f].x)[c] / scale), -32768.f, 32767.f));
+            vals[f] = static_cast<int16_t>(scale != 0 ? std::clamp(std::round((&fm[f].x)[c] / scale), -32768.f, 32767.f) : 0.f);
             if (vals[f]) zero = false;
         }
         if (zero) continue;
@@ -1142,6 +1168,24 @@ std::vector<uint8_t> CompressIKError(const std::vector<std::pair<Vec3, RadianEul
         std::vector<int16_t> v(error.size());
         for (size_t n = 0; n < error.size(); n++)
             v[n] = static_cast<int16_t>(std::clamp(std::round(value(n) / scale), -32768.f, 32767.f));
+        if (b.Tell() > 32767) Fatal("IK error stream too large");
+        b.PatchAt<int16_t>(24 + k * 2, static_cast<int16_t>(b.Tell()));
+        for (int16_t s : EncodeRLE(v)) b.I16(s);
+    }
+    return b.Data();
+}
+
+// A stored error stream (decompiled models): retail's scales and values, re-encoded as is.
+std::vector<uint8_t> CompressStoredIKError(const float scales[6], const std::vector<std::array<float, 6>>& errors) {
+    Buffer b;
+    b.Reserve(36);
+    for (int k = 0; k < 6; k++) {
+        float scale = scales[k];
+        b.PatchAt<float>(k * 4, scale);
+        std::vector<int16_t> v(errors.size());
+        for (size_t n = 0; n < errors.size(); n++)
+            v[n] = static_cast<int16_t>(scale != 0 ? std::clamp(std::round(errors[n][k] / scale), -32768.f, 32767.f) : 0.f);
+        if (b.Tell() > 32767) Fatal("stored IK error stream too large");
         b.PatchAt<int16_t>(24 + k * 2, static_cast<int16_t>(b.Tell()));
         for (int16_t s : EncodeRLE(v)) b.I16(s);
     }
@@ -1359,6 +1403,10 @@ void ProcessIKRules(BuildContext& ctx) {
             o.floor = r.floor;
             o.pos = r.pos;
             o.q = r.q;
+            if (r.src && r.src->hasStoredTarget) {
+                o.pos = r.src->pos;
+                o.q = r.src->q;
+            }
             o.endHeight = r.endHeight;
             o.attachment = r.attachment;
             o.iStart = r.start;
@@ -1374,7 +1422,10 @@ void ProcessIKRules(BuildContext& ctx) {
                 o.tail = o.end = 1;
                 o.contact = 0;
             }
-            if (!r.error.empty()) o.compressedError = CompressIKError(r.error);
+            if (r.src && r.src->hasErrors)
+                o.compressedError = CompressStoredIKError(r.src->errorScales, r.src->errors);
+            else if (!r.error.empty())
+                o.compressedError = CompressIKError(r.error);
             a.ikRules.push_back(std::move(o));
         }
     }
@@ -1412,6 +1463,9 @@ void EncodeAnimations(BuildContext& ctx) {
             float scale = (-minv > maxv) ? minv / -32768.f : maxv / 32767.f;
             bones[j].rotscale[k] = scale;
         }
+        // a stored scale (decompiled models) keeps the retail quantization grid
+        for (auto& rs : ctx.qc.boneRotScales)
+            if (IEquals(rs.first, bones[j].name)) bones[j].rotscale = rs.second;
     }
     int sf = ctx.qc.sectionFrames > 0 ? ctx.qc.sectionFrames : 30;
     int sfMin = ctx.qc.sectionFrames > 0 ? ctx.qc.sectionMinFrames : 120;
@@ -1422,7 +1476,7 @@ void EncodeAnimations(BuildContext& ctx) {
         // only the bits retail animation descriptors use (looping, snap, delta, all-zeros,
         // 0x20000, frame movement); build-time flags such as noforceloop are not stored
         ca.flags = a.flags & (0x1 | 0x2 | 0x4 | 0x20 | 0x20000 | STUDIO_FRAMEMOVEMENT);
-        if (!a.frameMove.empty()) ca.frameMovement = EncodeFrameMovement(a.frameMove);
+        if (!a.frameMove.empty()) ca.frameMovement = EncodeFrameMovement(a.frameMove, a.fixedFmScales ? &a.fmScales : nullptr);
         else ca.flags &= ~STUDIO_FRAMEMOVEMENT;
         ca.numFrames = a.numFrames;
         ca.movements = a.movements;
@@ -1431,6 +1485,11 @@ void EncodeAnimations(BuildContext& ctx) {
         ca.bmax = a.bmax;
         bool sectioned = a.numFrames >= sfMin && a.numFrames > sf && sf > 0;
         std::vector<float> posScales = PositionScales(ctx, a, sectioned);
+        if (a.qc)
+            for (auto& ps : a.qc->posScales) {
+                int j = ctx.FindBone(ps.first);
+                if (j >= 0 && ps.second > 0) posScales[j] = ps.second;
+            }
         if (!sectioned) {
             ca.sections.push_back(EncodeChain(ctx, a, posScales, 0, a.numFrames - 1));
         } else {
@@ -1439,7 +1498,7 @@ void EncodeAnimations(BuildContext& ctx) {
             for (int s = 0; s < nsec; s++) {
                 int f0 = s * sf;
                 int f1 = std::min(f0 + sf, a.numFrames - 1);
-                ca.sections.push_back(EncodeChain(ctx, a, posScales, f0, f1));
+                ca.sections.push_back(EncodeChain(ctx, a, posScales, f0, f1, f1 == f0 + sf ? sf : -1));
             }
             // trailing section with only the final frame
             ca.sections.push_back(EncodeChain(ctx, a, posScales, a.numFrames - 1, a.numFrames - 1));

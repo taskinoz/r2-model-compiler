@@ -36,9 +36,9 @@ IK rules, procedural bones and weapon UI panels.
   colours and a second UV set (from DMX).
 
 All 602 retail multiplayer models and 3,422 unique single-player models decompile and
-recompile with it. 591 and 3,411 of them match the original in every compared field,
-collision included. The remainder are documented: sub-inch animation re-quantization
-and some retail data quirks. See [VALIDATION.md](VALIDATION.md) for the evidence and in-game checks.
+recompile with it, and all 4,024 match every compared summary field, collision
+included. This comparison samples animation frames; detailed field differences
+remain. See [VALIDATION.md](VALIDATION.md) for the evidence, limits and in-game checks.
 
 ## Quick start
 
@@ -250,6 +250,18 @@ decompiler writes them when a model needs them.
   kept apart stay apart even when identical in every attribute.
 - `$keyvalues` may appear more than once; each block is stored as its own
   `mdlkeyvalue` text, as retail does.
+- `$bonerotscale "bone" x y z` and animation `posscale "bone" step` retain the
+  original rotation and position quantization grids.
+- Animation `fmtrack "file.fmtrack"` retains a stored root-motion track independently
+  of the root bones. The text file starts with four scales, followed by one row of
+  `x y z yaw` per animation frame (yaw in degrees). It replaces motion extraction.
+- Animation `hasscale` retains flag 0x20000 even when every bone has unit scale.
+- `ikrule ... errors "file.ikerr"` retains stored IK errors. The text file starts with
+  six scales, followed by rows of position xyz and rotation xyz (radians).
+  `storedtarget x y z qx qy qz qw` retains the rule's target and quaternion.
+  The decompiler emits both options together. After editing an animation, remove
+  `errors` and `storedtarget` to recompute IK, and remove `fmtrack` and use `rm` if
+  root motion should be extracted again. Retained data does not follow source edits.
 
 ## Building from source
 
@@ -311,8 +323,8 @@ collects the v53 format facts the compiler relies on.
 
 - Output targets Titanfall 2 v53 only. Titanfall 1 and Apex Legends model files are not
   inputs; the compiler reads QC/SMD/DMX.
-- The remaining retail differences are listed in VALIDATION.md. Some animations
-  differ by 0.28-0.92 inches after re-quantization; the rest are retail data quirks.
+- The summary comparison samples first, middle and last animation frames. Detailed
+  retail differences, including one model's bind-pose scale, remain in VALIDATION.md.
 - Crowbar's command line is reproduced in a test, but its GUI has not been driven
   automatically.
 

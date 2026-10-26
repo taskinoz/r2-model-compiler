@@ -122,6 +122,30 @@ def extract(d, p, frame, scale):
         return struct.unpack_from('<h', d, p + valid * 2)[0] * scale
 
 
+def anim_pos_scales(d, h, ai):
+    """(bone, position scale) for every bone an animation stores as RLE positions."""
+    o = h['localanimindex'] + ai * 0x5C
+    a = mdl53.u(mdl53.ANIMDESC_FIELDS, d, o)
+    if a['sectionframes']:
+        n = (a['numframes'] - 1) // a['sectionframes'] + 2
+        starts = [o + struct.unpack_from('<i', d, o + a['sectionindex'] + 4 * s)[0] for s in range(n)]
+    else:
+        starts = [o + a['animindex']]
+    found = {}
+    for r in starts:
+        for _ in range(512):
+            ps, bone, flags = struct.unpack_from('<fBB', d, r)
+            if bone == 255:
+                break
+            if not flags & 0x02 and ps > 0:
+                found.setdefault(bone, ps)
+            nxt = struct.unpack_from('<i', d, r + 28)[0]
+            if nxt == 0:
+                break
+            r += nxt
+    return sorted(found.items())
+
+
 def decode_frame_movement(d, m, ai, frame_indices):
     """Respawn root motion (STUDIO_FRAMEMOVEMENT): (x, y, z, yaw degrees) per frame, or None."""
     o = m.hdr['localanimindex'] + ai * 0x5C
@@ -495,8 +519,9 @@ def ik_error_frames(d, rule):
     return n
 
 
-def ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta):
-    """QC ikrule options reproducing an animation's retail rules, in order."""
+def ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta, outdir=None, base=''):
+    """QC ikrule options reproducing an animation's retail rules, in order. With outdir,
+    each rule's stored error stream is written to <base>_ik<n>.ikerr and referenced."""
     rules = decode_ik_rules(d, h, ai)
     nf = a['numframes']
     opts = []
@@ -595,6 +620,20 @@ def ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta):
             o += ' fakeorigin %s %s %s' % tuple(fmt(v) for v in r['pos'])
         if kind == 'attachment' and 0 <= r['bone'] < len(bones) and r['bone'] != chain_ends[r['chain']]:
             o += ' bone "%s"' % bones[r['bone']]['name']
+        if outdir and r['compressedikerrorindex']:
+            o += ' storedtarget ' + ' '.join('%.9g' % v for v in (*r['pos'], *r['q']))
+            # retail's error stream as stored (r2c "errors"): recomputing it from the
+            # re-encoded animation lands a little off, and some retail streams are stale
+            co = r['offset'] + r['compressedikerrorindex']
+            scale = struct.unpack_from('<6f', d, co)
+            offs = struct.unpack_from('<6h', d, co + 24)
+            name = '%s_ik%d.ikerr' % (base, i)
+            with open(os.path.join(outdir, name), 'w', newline='\n') as f:
+                f.write(' '.join('%.9g' % v for v in scale) + '\n')
+                for fr in range(ik_error_frames(d, r)):
+                    f.write(' '.join('%.9g' % extract(d, co + offs[k] if offs[k] > 0 else None, fr, scale[k])
+                                     for k in range(6)) + '\n')
+            o += ' errors "%s"' % name
         opts.append(o)
     # studiomdl adds release rules for chains an animation moves without rules; retail
     # animations that lack them were compiled with noautoik
@@ -890,6 +929,11 @@ def decompile(path, outdir):
         for b in bones:
             if b['flags'] & 0x40000:
                 qc.append('$bonemerge "%s"' % b['name'])
+    # retail rotation quantization scales (r2c extension): recomputing them from decoded
+    # angles lands a hair off, which far from the origin moves bones measurably
+    if not static and h['numlocalanim']:
+        for b in bones:
+            qc.append('$bonerotscale "%s" %s' % (b['name'], ' '.join('%.9g' % v for v in b['rotscale'])))
 
     vtx = mdl53.parse_vtx(d, h['vtxOffset']) if h['vtxSize'] else None
     sz = mdl53.size(mdl53.BODYPART_FIELDS)
@@ -1161,10 +1205,18 @@ def decompile(path, outdir):
         frames = [[(e[0], e[1]) for e in fr] for fr in frames]
         delta = bool(a['flags'] & 4)
         fms = decode_frame_movement(d, m, ai, range(len(frames)))
-        if fms is not None and not delta:
-            # bake root motion back into the root bones; "rm" re-extracts it on compile
-            frames = [apply_root_motion(bones, fr, fm) for fr, fm in zip(frames, fms)]
         smd = 'anim_%s.smd' % name.replace('@', 'at_').replace('/', '_').replace('\\', '_')
+        fm_file = None
+        if fms is not None and not static:
+            # retail's track as stored (r2c "fmtrack"): the roots stay as stored too, so
+            # neither has to be re-derived (retail does not record how it split the yaw)
+            fm_file = smd[:-4] + '.fmtrack'
+            ao = h['localanimindex'] + ai * 0x5C
+            fo = ao + mdl53.u(mdl53.ANIMDESC_FIELDS, d, ao)['framemovementindex']
+            with open(os.path.join(outdir, fm_file), 'w', newline='\n') as f:
+                f.write(' '.join('%.9g' % v for v in struct.unpack_from('<4f', d, fo)) + '\n')
+                for fm in fms:
+                    f.write(' '.join('%.9g' % v for v in fm) + '\n')
         skel = []
         for fi, fr in enumerate(frames):
             row = []
@@ -1182,16 +1234,22 @@ def decompile(path, outdir):
             opts.append('loop noforceloop')
         if a['flags'] & 2:
             opts.append('snap')
-        if fms is not None and not static:
-            opts.append('rm')
+        if fm_file:
+            opts.append('fmtrack "%s"' % fm_file)
         if delta:
             opts.append('delta')  # frames are raw local deltas
+        if a['flags'] & 0x20000:
+            opts.append('hasscale')
         if a['flags'] & 0x20:
             # all-zero delta (retail flags 0x24); keep the frame count when there is one
             opts.append('noanimation' if a['numframes'] <= 1 else 'noanim_keepduration')
         if ai in anim_weight_names:
             opts.append('weightlist "%s"' % anim_weight_names[ai])
-        opts += ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta)
+        # retail position steps (r2c extension); recovering them from decoded values
+        # misses when raw sections widen the range
+        for bi, s in anim_pos_scales(d, h, ai):
+            opts.append('posscale "%s" %.9g' % (bones[bi]['name'], s))
+        opts += ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta, outdir, smd[:-4])
         anim_names.append((name, smd, opts, a))  # retail names, '@seq' included
         qc.append('$animation "%s" "%s" %s' % (anim_names[-1][0], smd, ' '.join(o for o in opts if not o.startswith('//'))))
     # sequences

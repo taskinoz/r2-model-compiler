@@ -6,8 +6,8 @@ animation, IK rules, sequence weight lists, procedural bones, bone followers and
 panel meshes. It is not a claim of complete Valve/Respawn feature parity.
 
 Executable: `build/r2studiomdl.exe` (Windows x64, MSVC Release, static C++ runtime),
-built from commit 0cc71f0 (not yet released). SHA-256:
-`158f40dfde02193e15d853e4472a791ad86dc8eedcb2a5a32705a4f66f8f2154`.
+built with the animation-preservation update on top of 75f435b (not yet released).
+SHA-256: `35a2c4dd31d4ab7a29618bf881816a59ca08d5560e7ce88c1a30ca84a00ad530`.
 (v0.4.0 shipped `e94ee0a3...`, v0.3.0 `a6370348...`, v0.2.0 `67fb263a...` and v0.1.0
 `90c58cc2...`. The changes since v0.4.0 are under "Field-level comparison"; those since
 v0.2.0 are under "Collision faces from source polygons".)
@@ -18,7 +18,7 @@ below regenerate them from your own copy of the game.
 
 ## Automated checks
 
-- Both CTest groups pass: the C++ collision hull suite and twenty-three Python compiler/
+- Both CTest groups pass: the C++ collision hull suite and twenty-seven Python compiler/
   corpus-runner regression tests (including bone scale, IK rules, procedural bones,
   UI panels, bone followers with per-joint concave collision, DMX UV2/vertex
   colour, IK ranges that studiomdl overwrote in order, DMX polygons as map-collision
@@ -33,19 +33,42 @@ below regenerate them from your own copy of the game.
   itself has not been driven.
 - The full corpus was run with the executable above (see "Retail corpus").
 
+## Animation preservation
+
+The decompiler now retains the original bone rotation scales, per-animation position
+scales, frame-movement track and its scales, HAS_SCALE flag, and stored IK targets
+and error samples. Recomputing these from decoded poses had introduced rounding
+differences or replaced stale retail error streams. The compiler accepts explicit
+QC options and text sidecars for this data; README.md describes their format and
+which options to remove when editing an animation.
+
+Section constant-value detection excludes the shared next-section frame. Source
+bones with unchanged parents and no realignment retain their local transforms
+directly, avoiding numerical noise from converting through world space. Quantization
+grid recovery for ordinary input is refined by least squares over matching samples.
+
+Three added regressions check a pose jump at a section boundary, exact stored motion
+and quantization scales (including zero channels and malformed files), and exact
+stored IK targets and errors across decompile/recompile. Existing tests still
+exercise authored motion extraction and IK computation.
+The Northstar evidence below is from the earlier builds; this preservation update
+has not had a separate in-game run.
+
 ## Retail corpus
 
 All **602/602** retail `mp_common` MDL v53 models decompiled and compiled without a
-compile failure or decompiler exception. **591/602** match every compared field.
+compile failure or decompiler exception. **602/602** match every compared summary field.
 
 Reports:
 
-- `test-output/mp-final2/results.json` and `mp-final2.log`: full run (fresh decompile
-  and compile) with the executable above, and `structdiff-mp-final2.json` for its
-  field-level comparison. No collision differences remain; v0.2.0 matched 559/602,
-  v0.3.0 587/602 and v0.4.0 591/602.
+- `test-output/animation-preservation/mp/results.json`: fresh decompile and compile
+  with the executable above; `comparison.json` records all 11 previously differing
+  models fixed and no new differences against `mp-final2`. The combined run log is
+  `test-output/animation-preservation.log`. Rebuilt MDLs are retained; generated
+  source exports were pruned after each model to save disk space.
+  v0.2.0 matched 559/602, v0.3.0 587/602 and v0.4.0 591/602.
 - `test-output/ui-corpus2`: all 35 retail models with UI panels (163 panels), fresh
-  decompile and compile with the executable above: 35/35 match, and every panel block
+  decompile and compile with an earlier build: 35/35 match, and every panel block
   (header hash, bones, vertices, faces, winding and bounds) is byte-identical to retail.
 - `test-output/corpus-heading` and `test-output/corpus-euler`: A/B runs of the two
   frame-movement yaw definitions (heading kept: 7 vs 9 animation differences).
@@ -78,33 +101,21 @@ each bone's collision reference. Entry order within the collision block is not
 compared: retail jointed models order it by neither bone nor PHY solid. Animation
 samples are first, middle and last frames. This is not a byte-for-byte comparison.
 
-The 11 remaining differences are retained in the report:
-
-| Models | Difference |
-| --- | --- |
-| `pov_pete_core`, `pete_scripted_skyway` | Sampled world position differs by 0.28 inches |
-| `r2_prowler` | 0.30 inches |
-| `dropship_common` | 0.44 inches |
-| `droppod_fireteam` | 0.56 inches |
-| `straton_anims` | 0.69 inches |
-| `widow` | 0.92 inches |
-| `titan_medium_sp_core`, `titan_heavy_sp_core`, `titan_medium_mp_reactions`, `titan_medium_mp_core` | IK footstep error samples differ by 0.27-0.50 (about 0.3-0.6 degrees at the comparison's 50-unit lever) |
-
-The animation differences come from bones 6,000-54,000 units from the model origin
-and from how yaw is split between the frame-movement track and the root bone. Retail
-does not record that split, and our heading-based split is within 0.003-0.04 degrees
-of it. The collision differences are explained under "Collision faces from source
-polygons" below.
-Volumes and solid counts match. The IK residuals follow from the same animation
-re-quantization: errors are recomputed from the decoded poses. None is claimed lossless.
+The previous build's seven sampled animation differences (0.28-0.92 inches) and
+four IK differences (0.27-0.50 at the comparison's 50-unit angular lever) are all
+cleared by retaining the original quantization, frame movement and IK data.
+This summary result does not imply byte identity or exhaustive animation equality;
+the detailed field differences below remain separately documented.
 
 ## Single-player corpus
 
 The 13 single-player map VPKs (`englishclient_sp_*.bsp.pak000_dir.vpk`) hold 11,709
 models. 4,997 are byte-identical to `mp_common` models; the other **3,422** unique v53
 models were decompiled and compiled with the executable above. There were no compile
-failures or decompiler exceptions, and **3,416/3,422** match every compared field
-(`test-output/sp-final2`; v0.2.0 matched 3,223, v0.3.0 3,384 and v0.4.0 3,411). No single-player model uses flexes,
+failures or decompiler exceptions, and **3,422/3,422** match every compared summary field
+(`test-output/animation-preservation/sp/results.json`; v0.2.0 matched 3,223, v0.3.0
+3,384, v0.4.0 3,411, and the previous build 3,416). `comparison.json` records all six
+previously differing models fixed, with no new differences. No single-player model uses flexes,
 eyeballs or vertex animation, and none sets the UV2 flag.
 
 This corpus found problems the multiplayer set does not exercise. They are fixed in
@@ -129,15 +140,14 @@ this build:
   a rewritten start from a rewritten end. This took `titan_buddy_sp_core` from 59.17
   to an ordinary 0.72 residual.
 
-The 6 remaining differences (the three trinity models and the two giantfan panels
-now match, through `$staticcollisioncount` and mesh-only vertices):
-
-| Models | Difference |
-| --- | --- |
-| `titan_buddy_mp_core` | One attachment rule's error stream carries a constant rotation offset of about 60 degrees in every frame, while the rule's own orientation matches; the sibling animation matches. Treated as stale retail data |
-| `titan_buddy_sp_core`, `titan_buddy_scripted_s2s` | IK footstep error samples off by 0.72 and 0.27 (re-quantization over animations of up to 600 frames) |
-| `birmingham_fleetscale`, `vehicle_draconis_hero_animated` | Sampled world positions off by 1.24 and 0.58 inches (large, distant animated ships) |
-| `titan_buddy_embark` | Retail sets HAS_SCALE (0x20000) on all 54 animations although only one scales; in the 14 other models with scaled animations the flag marks exactly those |
+The six previous summary differences are cleared: the Titan buddy models retain
+their stored IK targets/errors (including the stale-looking constant error offset
+in `titan_buddy_mp_core`); `birmingham_fleetscale` and
+`vehicle_draconis_hero_animated` retain their original motion and quantization;
+`titan_buddy_embark` retains HAS_SCALE on all 54 animations although only one scales.
+The three trinity models and two giantfan panels already matched through
+`$staticcollisioncount` and mesh-only vertices. Detailed field differences remain
+below; no comparison threshold was loosened.
 
 ## Field-level comparison (structdiff)
 
@@ -146,13 +156,20 @@ animations, body parts, meshes, VTX strips, VVD/VVC headers and fixups, hitboxes
 attachments, IK, textures, skins, keyvalues, per-triangle header) into flat field
 paths. It compares the rebuilt copy of each model against retail, leaving out offsets,
 sizes and checksums. It goes well beyond the summary comparison above.
+The checker now resolves the corpus runner's hashed folders for duplicate basenames;
+earlier single-player reports skipped 44 such models. The corrected baseline covers
+all 3,422 and still has 22 differing field paths.
 
 ```powershell
-python -I tools\structdiff.py --report test-output\mp-final2\results.json --out test-output\structdiff-mp-final2.json
+python -I tools\structdiff.py --report test-output\animation-preservation\mp\results.json --out test-output\animation-preservation\structdiff-mp.json
 ```
 
 At v0.4.0, 97 field paths differed in `mp_common`. With this build, 17 differ in
-`mp_common` and 22 in the single-player corpus. The rules found and fixed on the way
+`mp_common` and 20 in the single-player corpus (down from the corrected baseline's
+22; the HAS_SCALE animation/sequence flag differences are cleared). Both detailed
+reports are under `test-output/animation-preservation/structdiff-{mp,sp}.json` and
+cover all 602 and 3,422 models. No new field paths or increased model counts were
+introduced. The rules found and fixed on the way
 are listed in `docs/mdl-v53-format.md`:
 - vertex identity by tangent, and retail vertex numbering kept;
 - fixup tables and their LOD counts;
@@ -170,7 +187,7 @@ What still differs, and why:
 
 | Field | Models (MP / SP) | Reason |
 | --- | --- | --- |
-| Per-triangle tree node/leaf/vertex counts, box | 92 / 1,549 | Retail splits small nodes by a rule not reproduced (leaves of 0-12 triangles), and builds its vertex list from source data the file does not keep. The tree is a collision acceleration structure; it is rebuilt valid, not identical |
+| Per-triangle tree node/leaf/vertex counts, box | 92 / 1,558 | Retail splits small nodes by a rule not reproduced (leaves of 0-12 triangles), and builds its vertex list from source data the file does not keep. The tree is a collision acceleration structure; it is rebuilt valid, not identical |
 | Body-part model names | 124 / 43 | Retail source paths that are absolute, start with `/` or `..`, lack an extension or repeat within a model. The decompiler writes generated names for these |
 | Bone vertex-LOD flags | 13 / 32 | Bones retail flags without any stored vertex using them (group bones such as `grp_l_leg_lod0`), probably from zero-weight source weights the VVD drops |
 | `anims[*].nummovements` | 2 / 0 | A legacy Valve movement record on two animations that otherwise use no motion flags |
@@ -178,7 +195,9 @@ What still differs, and why:
 | `ptpov_test` texture / model type | 1 / 0 | A retail test model whose structures overlap other data |
 | Header flags | 0 / 3 | One multi-bone model with 0x800000 (`wf_platform_4`) and two single-bone models, still to be explained |
 | Generated hitbox bounds | 0 / 3 | Generated-hitbox vertex sets differ by vertices outside LOD 0, like the per-triangle vertex list |
-| Bone scale and animation flags | 0 / 1 | `titan_buddy_embark`: see the table above |
+| Bind-pose bone scale and inverse bind matrix | 0 / 1 | `titan_buddy_embark`: bone 180 has bind scale 0.1 in retail and 1 in the rebuild, with a corresponding inverse-bind difference. Animation scale samples are retained; this bind-pose field is not reproduced |
+| Texture/skin ordering and per-triangle version | 0 / 1 | `straton_imc_gunship_01_1000x`: retail material/skin indices differ from the compiler's ordering, and retail keeps tree version 0 despite `allowstatic`; the compiler writes version 2. These exceptions remain unmatched |
+| Unused VVD/VVC LOD-count slots | 0 / 1 | `tree_yellow_med_01`: retail zeros unused slots from LOD 4; the compiler repeats the final used count |
 
 ## Collision faces from source polygons
 
@@ -349,5 +368,7 @@ MDL files are not direct inputs: this compiler reads QC/SMD/DMX and targets R2 v
 
 The ZIP includes the executable, documentation and authored source examples. It
 does not include the retail corpus or game textures/materials.
-The v0.1.0 package was rebuilt from a clean `dist` folder and extracted to a new
-folder. Its `r2studiomdl.exe` (`90c58cc2...`) compiled all three bundled examples.
+The current package is built from a clean staging folder and extracted to a new
+folder. Its executable hash matches the tested compiler above, and the extracted
+executable compiles all three bundled examples. Evidence:
+`test-output/animation-package-check.json`.

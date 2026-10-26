@@ -198,6 +198,97 @@ class CompilerRegressions(unittest.TestCase):
                               .replace('"anim_', '"decompiled/anim_'), 'second')
         self.assertEqual(roundtrip.compare(roundtrip.summary(first), roundtrip.summary(second)), [])
 
+    def test_constant_section_excludes_shared_boundary_frame(self):
+        bones = [{'name':'root','parent':-1}, {'name':'tip','parent':0}]
+        bind = [((0,0,0),(0,0,0)), ((10,0,0),(0,0,0))]
+        dc.write_smd(self.work / 'body.smd', bones, [bind], cube((10,0,0),(0,0,1),1))
+        frames = [[bind[0], ((11 if i < 30 else 12,0,0),(0,0,0))] for i in range(65)]
+        dc.write_smd(self.work / 'move.smd', bones, frames)
+        output = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n'
+            '$sectionframes 30 30\n$sequence move "move.smd"\n')
+        d = output.read_bytes()
+        m = mdl53.Model(d)
+        ao = m.hdr['localanimindex']
+        a = mdl53.u(mdl53.ANIMDESC_FIELDS, d, ao)
+        first = ao + struct.unpack_from('<i', d, ao + a['sectionindex'])[0]
+        while d[first + 4] != 1:
+            jump = struct.unpack_from('<i', d, first + 28)[0]
+            self.assertNotEqual(jump, 0, 'tip record missing')
+            first += jump
+        self.assertEqual(d[first + 4], 1)
+        self.assertTrue(d[first + 5] & 2)  # RAWPOS: frames 0..29 are constant
+        _, _, decoded = dc.decode_anim(d, m, m.bones(), 0, [29,30,31])
+        self.assertEqual([fr[1][0][0] for fr in decoded], [11,12,12])
+
+    def test_stored_animation_tracks_and_quantization(self):
+        bones = [{'name':'root','parent':-1}, {'name':'tip','parent':0}]
+        bind = [((0,0,0),(0,0,0)), ((6000,0,0),(0,0,0))]
+        dc.write_smd(self.work / 'body.smd', bones, [bind], cube((6000,0,0),(0,0,1),1))
+        frames = [[bind[0], ((6000 + i * .125,0,0),(.03125 * i,0,0))] for i in range(7)]
+        dc.write_smd(self.work / 'move.smd', bones, frames)
+        # Zero scales are valid for absent channels. The root pose stays separate.
+        track = [(i * .25, 0, -i * .5, i * 1.25) for i in range(7)]
+        (self.work / 'move.fmtrack').write_text('0.25 0 0.5 1.25\n' +
+            ''.join(' '.join(map(str, row)) + '\n' for row in track))
+        first = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n'
+            '$bonerotscale "tip" .0009765625 .001 .001\n'
+            '$animation move "move.smd" fmtrack "move.fmtrack" posscale "tip" .125 hasscale\n'
+            '$sequence move move\n')
+        data = first.read_bytes()
+        model = mdl53.Model(data)
+        self.assertEqual(dc.decode_frame_movement(data, model, 0, range(7)), track)
+        self.assertEqual(dc.anim_pos_scales(data, model.hdr, 0), [(1, .125)])
+        self.assertEqual(model.bones()[1]['rotscale'][0], .0009765625)
+        a, _, pose = dc.decode_anim(data, model, model.bones(), 0)
+        self.assertTrue(a['flags'] & 0x20000)  # retained even with all bone scales equal to 1
+        self.assertEqual(pose[-1][1][0], (6000.75, 0, 0))
+        qc = Path(dc.decompile(first, self.work / 'decompiled'))
+        second = self.work / 'second.mdl'
+        subprocess.run([str(self.compiler), '-quiet', '-o', str(second), str(qc)], check=True,
+                       capture_output=True, timeout=30)
+        d2 = second.read_bytes()
+        m2 = mdl53.Model(d2)
+        self.assertEqual(dc.decode_frame_movement(d2, m2, 0, range(7)), track)
+        self.assertEqual(dc.anim_pos_scales(d2, m2.hdr, 0), [(1, .125)])
+        self.assertEqual(roundtrip.compare(roundtrip.summary(first), roundtrip.summary(second)), [])
+        (self.work / 'move.fmtrack').write_text('0.25 0 0.5 1.25\n' +
+            ''.join(' '.join(map(str, row)) + '\n' for row in track[:-1]))
+        result = subprocess.run([str(self.compiler), '-quiet', str(self.work / 'test.qc')],
+                                capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('track has 6 frames', result.stdout + result.stderr)
+        for bad in ('0.25 0 0.5 1.25\n', '0.25 0 0.5 1.25\n0 0 0 0\njunk',
+                    '0.25 0 0.5 1.25\n0 0 nan 0', '0.25 0 0.5 1.25\n0 0 0'):
+            (self.work / 'move.fmtrack').write_text(bad)
+            result = subprocess.run([str(self.compiler), '-quiet', str(self.work / 'test.qc')],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('malformed animation data', result.stdout + result.stderr)
+
+    def test_stored_ik_target_and_error_stream(self):
+        bones = [{'name':'root','parent':-1}, {'name':'hip','parent':0},
+                 {'name':'knee','parent':1}, {'name':'foot','parent':2}]
+        bind = [((0,0,0),(0,0,0)), ((0,0,30),(0,0,0)), ((0,0,-15),(0,0,0)), ((0,0,-15),(0,0,0))]
+        dc.write_smd(self.work / 'body.smd', bones, [bind], cube((0,0,0),(0,0,1),3))
+        dc.write_smd(self.work / 'move.smd', bones, [bind] * 5)
+        errors = [(i * .25, -i * .5, 0, i * .125, 0, 0) for i in range(5)]
+        (self.work / 'stored.ikerr').write_text('.25 .5 0 .125 0 0\n' +
+            ''.join(' '.join(map(str, row)) + '\n' for row in errors))
+        first = self.compile('$modelname "test.mdl"\n$body body "body.smd"\n'
+            '$ikchain "leg" "foot" knee 1 0 0\n'
+            '$animation move "move.smd" ikrule "leg" footstep range 0 1 3 4 contact 1 '
+            'storedtarget 123 -456 0 0 0 0 1 errors "stored.ikerr"\n$sequence move move\n')
+        def values(path):
+            d = path.read_bytes()
+            r = dc.decode_ik_rules(d, mdl53.Model(d).hdr, 0)[0]
+            return tuple(r['pos']), tuple(r['q']), [sum(dc.decode_ik_error(d, r, i), ()) for i in range(5)]
+        self.assertEqual(values(first), ((123., -456., 0.), (0., 0., 0., 1.), errors))
+        qc = dc.decompile(first, self.work / 'decompiled')
+        second = self.work / 'second.mdl'
+        subprocess.run([str(self.compiler), '-quiet', '-o', str(second), qc], check=True,
+                       capture_output=True, timeout=30)
+        self.assertEqual(values(second), values(first))
+
     def test_bone_scale_animation_roundtrips(self):
         bones = [{'name':'root','parent':-1}, {'name':'tip','parent':0}]
         bind = [((0,0,0),(0,0,0)), ((10,0,0),(0,0,0))]
