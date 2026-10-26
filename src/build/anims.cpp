@@ -55,7 +55,7 @@ RadianEuler QuaternionMAAngles(const RadianEuler& p, float s, const RadianEuler&
 void BuildContext::CalcBoneTransforms(const WAnim& a, int frame, std::vector<Mat3x4>& transforms) const {
     transforms.resize(bones.size());
     for (size_t k = 0; k < bones.size(); k++) {
-        Mat3x4 bm = AngleMatrix(a.sanim[frame][k].rot, a.sanim[frame][k].pos);
+        Mat3x4 bm = AngleMatrix(a.sanim[frame][k].rot, a.sanim[frame][k].pos, a.sanim[frame][k].scale);
         transforms[k] = bones[k].parent == -1 ? bm : Concat(transforms[bones[k].parent], bm);
     }
 }
@@ -302,6 +302,7 @@ void BuildContext::BuildAnimations() {
             for (int k = 0; k < nb; k++) {
                 int l = k < static_cast<int>(inst->globalToLocal.size()) ? inst->globalToLocal[k] : -1;
                 if (l >= 0) a.sanim[j][k].scale = inst->frames[a.startFrame + j][l].scale;
+                else if (!qa->rawDelta) a.sanim[j][k].scale = bones[k].scale;
             }
         }
         for (auto& fr : a.sanim)
@@ -827,6 +828,19 @@ void BuildContext::BuildAnimations() {
             cm.position = mv.pos;
             a.movements.push_back(cm);
         }
+        if (!a.qc->movementRecords.empty()) {
+            a.movements.clear();
+            int last = -1;
+            for (auto& stored : a.qc->movementRecords) {
+                if (stored.endFrame < last || stored.endFrame >= a.numFrames || stored.endFrame < 0)
+                    Fatal("animation %s: invalid movementrecord end frame", a.name.c_str());
+                CMovement cm;
+                cm.endFrame = stored.endFrame; cm.motionFlags = stored.motionFlags;
+                cm.v0 = stored.v0; cm.v1 = stored.v1; cm.angle = stored.angle;
+                cm.vector = stored.vector; cm.position = stored.position;
+                a.movements.push_back(cm); last = stored.endFrame;
+            }
+        }
     }
 }
 
@@ -981,15 +995,31 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
             const Vec3& s = a.sanim[f0 + n][j].scale;
             const Vec3& s0 = a.sanim[f0][j].scale;
             for (int c = 0; c < 3; c++) {
-                if (std::fabs(s[c] - 1) > 1e-4f) scaleIdentity = false;
+                if (s[c] != (delta ? 1.f : bones[j].scale[c])) scaleIdentity = false;
                 if (std::fabs(s[c] - s0[c]) > 1e-6f) scaleConst = false;
             }
         }
         std::vector<int16_t> ss[3];
         bool animScale = !scaleIdentity && !scaleConst && nf > 1;
-        if (animScale) {
-            const float base = delta ? 0.f : 1.f, step = 1.f / 2048;  // bone scale and scalescale
+        if (scaleConst || nf == 1) {
+            double rawError = 0, rleError = 0;
             for (int c = 0; c < 3; c++) {
+                float value = a.sanim[f0][j].scale[c];
+                float raw = HalfToFloat(FloatToHalf(value));
+                float base = delta ? 0.f : bones[j].scale[c];
+                float level = std::clamp(std::round((value-base)*2048.f),-32768.f,32767.f);
+                float rle = base + level/2048.f;
+                rawError += static_cast<double>(raw-value)*(raw-value);
+                rleError += static_cast<double>(rle-value)*(rle-value);
+            }
+            // A constant non-unit bind scale may be exact on its RLE base but not
+            // representable as a half. Do not shrink the skinned mesh by rounding it.
+            if (rleError < rawError) animScale = true;
+        }
+        if (animScale) {
+            const float step = 1.f / 2048;
+            for (int c = 0; c < 3; c++) {
+                const float base = delta ? 0.f : bones[j].scale[c];
                 std::vector<int16_t> v(nf);
                 for (int n = 0; n < nf; n++) {
                     float q = std::round((a.sanim[f0 + n][j].scale[c] - base) / step);
@@ -1033,8 +1063,7 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
                 double dz = value.z/norm - sign*q.z, dw = value.w/norm - sign*q.w;
                 return dx*dx + dy*dy + dz*dz + dw*dw;
             };
-            // retail one-frame chains (trailing sections, single-frame animations) are always raw
-            if (nf == 1 || error(decoded) <= error(rle) + 1e-15) {
+            if (error(decoded) <= error(rle) + 1e-15) {
                 buf.PatchAt<uint64_t>(rec + 8, packed);
                 flags |= 0x04;
             } else {
@@ -1045,8 +1074,8 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
         } else {
             animRot = true;
         }
-        // position: raw Vector48 only when half precision is good enough, except that
-        // retail one-frame chains always store it raw. Retail always stores a position,
+        // position: raw Vector48 only when half precision is good enough.
+        // Retail always stores a position,
         // even at the bind position (never all-null value pointers).
         bool animPos = false;
         if (posConst || posZero || nf == 1) {
@@ -1055,7 +1084,7 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
             uint16_t h[3];
             for (int c = 0; c < 3; c++) {
                 h[c] = FloatToHalf(p[c]);
-                if (nf > 1 && std::fabs(HalfToFloat(h[c]) - p[c]) > 0.01f) ok = false;
+                if (std::fabs(HalfToFloat(h[c]) - p[c]) > 0.01f) ok = false;
             }
             if (ok) {
                 for (int c = 0; c < 3; c++) buf.PatchAt<uint16_t>(rec + 16 + c * 2, h[c]);
@@ -1067,7 +1096,7 @@ static std::vector<uint8_t> EncodeChain(const BuildContext& ctx, const WAnim& a,
         // raw scale (1,1,1 unless the bone holds a constant scale here)
         if (!animScale)
             for (int c = 0; c < 3; c++)
-                buf.PatchAt<uint16_t>(rec + 22 + c * 2, FloatToHalf(scaleIdentity ? 1.f : a.sanim[f0][j].scale[c]));
+                buf.PatchAt<uint16_t>(rec + 22 + c * 2, FloatToHalf(a.sanim[f0][j].scale[c]));
 
         // animated value streams follow the record
         // Retail never leaves all three value pointers null in an animated record (the
@@ -1498,7 +1527,9 @@ void EncodeAnimations(BuildContext& ctx) {
             for (int s = 0; s < nsec; s++) {
                 int f0 = s * sf;
                 int f1 = std::min(f0 + sf, a.numFrames - 1);
-                ca.sections.push_back(EncodeChain(ctx, a, posScales, f0, f1, f1 == f0 + sf ? sf : -1));
+                // The final frame also has its own trailing chain when this is
+                // a partial section. It must not change constant-channel choice.
+                ca.sections.push_back(EncodeChain(ctx, a, posScales, f0, f1, f1 > f0 ? f1 - f0 : -1));
             }
             // trailing section with only the final frame
             ca.sections.push_back(EncodeChain(ctx, a, posScales, a.numFrames - 1, a.numFrames - 1));

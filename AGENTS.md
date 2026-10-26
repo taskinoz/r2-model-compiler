@@ -69,6 +69,13 @@ keeps the executable as an artifact. Set `R2C_COMPILER` to test another executab
   prints each differing field path with its model count and examples. Use it to find
   retail rules the summary comparison does not cover, then confirm a rule over the
   whole corpus before relying on it.
+- `tools/validate53.py`: independent structure, full-frame animation, render/skin,
+  triangle-tree, PHY and map-brush validation. Use `rebuilt.mdl --against retail.mdl`
+  for a round trip. Native PHY ledges can be slightly nonconvex: exact oriented
+  triangles prove equality; infinite supporting planes alone do not.
+- `tools/validate_corpus.py`: validates every rebuilt file in a finished corpus
+  report (`--report results.json --out dense --jobs 8`). It checkpoints tool hashes,
+  thresholds and file stamps; never change its tools during a run.
 - `tools/recheck_corpus.py`: recompiles cached exports from a previous run with a new
   executable. It checks the input stamps and tool hashes first.
 - `tools/phy.py`: PHY / IVP compact-surface reader.
@@ -112,6 +119,8 @@ Build experiments in `build-dev` (`build-dev.bat`) while a corpus run is using
 Validation standard:
 - Never loosen a comparison threshold to make a model pass.
 - Explain each remaining difference, and list it in VALIDATION.md.
+- Run the dense validator as well as summary comparisons. A summary pass alone
+  does not establish animation, skinning or collision geometry equivalence.
 - Compare a new run's failing set against the previous run's: no model should newly
   differ.
 

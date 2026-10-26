@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import struct
 import subprocess
 import time
@@ -263,9 +264,38 @@ def compare(a, b):
     return issues
 
 
+def owned_workdir(work, root, source):
+    folder=Path(work).resolve(); root=Path(root).resolve()
+    if folder.parent != root:
+        raise ValueError('refusing to discard sources outside the output directory')
+    folder.mkdir(parents=True,exist_ok=True)
+    marker=folder/'.r2c-generated'
+    identity=str(Path(source).resolve())
+    if marker.exists():
+        if marker.read_text()!=identity: raise ValueError('work directory belongs to a different input')
+    elif any(folder.iterdir()):
+        raise ValueError('refusing to discard an existing, unmarked work directory')
+    else: marker.write_text(identity)
+    return folder
+
+
+def discard_work_sources(folder):
+    for child in folder.iterdir():
+        if child.name in ('recompiled.mdl','.r2c-generated'): continue
+        if child.is_symlink(): child.unlink()
+        elif child.is_dir():
+            if not child.resolve().is_relative_to(folder):
+                raise ValueError('refusing cleanup outside the generated work directory')
+            shutil.rmtree(child)
+        else: child.unlink()
+
+
 def process_model(job):
-    compiler, source, work, stamp = job
+    compiler, source, work, stamp = job[:4]
+    discard=bool(job[4]) if len(job)>4 else False
+    folder=None
     try:
+        if discard: folder=owned_workdir(work,job[5],source)
         qc = dc.decompile(source, work)
         outmdl = os.path.join(work, 'recompiled.mdl')
         run = subprocess.run([compiler, '-quiet', '-o', outmdl, qc], capture_output=True, text=True, timeout=600)
@@ -277,6 +307,9 @@ def process_model(job):
             result = {'status': 'diff' if issues else 'ok', 'issues': issues}
     except Exception as error:
         result = {'status': 'exception', 'error': repr(error), 'trace': traceback.format_exc()}
+    if folder is not None:
+        try: discard_work_sources(folder)
+        except (OSError,ValueError) as error: result['cleanup_error']=str(error)
     result['input_stamp'] = stamp
     return source, result
 
@@ -289,6 +322,7 @@ def main():
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--jobs', type=int, default=1, help='number of independent model workers')
     ap.add_argument('--resume', action='store_true', help='skip saved results with unchanged inputs and tools')
+    ap.add_argument('--discard-sources',action='store_true',help='retain rebuilt models and delete generated input exports in marked work folders')
     ap.add_argument('inputs', nargs='+')
     a = ap.parse_args()
     if a.jobs < 1:
@@ -307,6 +341,7 @@ def main():
     report = os.path.join(a.out, 'results.json')
     manifest = os.path.join(a.out, 'run.json')
     signature = run_signature(a.compiler)
+    signature['discard_sources']=a.discard_sources
     results = {}
     if a.resume and os.path.exists(report):
         if not os.path.exists(manifest) or json.loads(Path(manifest).read_text()) != signature:
@@ -329,7 +364,7 @@ def main():
         # Different model folders can contain the same basename.
         suffix = '-' + hashlib.sha256(f.encode()).hexdigest()[:12] if names[name] > 1 else ''
         work = os.path.join(a.out, name + suffix)
-        jobs.append((a.compiler, f, work, stamp))
+        jobs.append((a.compiler, f, work, stamp, a.discard_sources, str(Path(a.out).resolve())))
 
     def record(completed):
         for source, result in completed:
@@ -346,7 +381,8 @@ def main():
             record(future.result() for future in concurrent.futures.as_completed(pending))
     ok = sum(results[f]['status'] == 'ok' for f in files)
     print('\n%d/%d identical in the compared fields (%d resumed)' % (ok, len(files), reused))
+    return 0 if ok == len(files) else 1
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

@@ -17,7 +17,8 @@ enum : int {
     BONE_SCREEN_ALIGN_SPHERE = 0x08, BONE_SCREEN_ALIGN_CYLINDER = 0x10,
     BONE_IKCHAIN_INFLUENCE = 0x20,  // v52+: an IK chain's link bones and their descendants
     BONE_USED_BY_HITBOX = 0x100, BONE_USED_BY_ATTACHMENT = 0x200, BONE_USED_BY_VERTEX_LOD0 = 0x400,
-    BONE_USED_BY_VERTEX_MASK = 0x3FC00, BONE_USED_BY_BONE_MERGE = 0x40000, BONE_USED_BY_ANYTHING = 0x7FF00,
+    BONE_USED_BY_VERTEX_MASK = 0x3FC00, BONE_USED_BY_BONE_MERGE = 0x40000,
+    BONE_USED_BY_BONE_FOLLOWER = 0x80000, BONE_USED_BY_ANYTHING = 0xFFF00,
     BONE_FIXED_ALIGNMENT = 0x100000,
 };
 
@@ -292,6 +293,7 @@ struct CompiledModel {
     int numSkinRef = 0;
     std::vector<CBodyPart> bodyParts;
     int numLods = 1;
+    bool zeroUnusedLods = false;
     std::vector<float> lodSwitch;  // per LOD
     std::vector<std::vector<std::pair<int, std::string>>> lodMaterialReplacements;  // [lod] -> (texture, name)
     std::vector<std::string> nodeNames;

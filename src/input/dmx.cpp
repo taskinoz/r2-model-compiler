@@ -434,7 +434,17 @@ Vec3 Vec3Of(const Attr* a, size_t i = 0) {
 
 Mat3x4 TransformOf(const Doc& doc, const Elem* t) {
     if (!t) return Identity();
-    return QuaternionMatrix(QuatOf(t->Get("orientation")), Vec3Of(t->Get("position")));
+    Mat3x4 m = QuaternionMatrix(QuatOf(t->Get("orientation")), Vec3Of(t->Get("position")));
+    if (const Attr* scale = t->Get("scale")) {
+        Vec3 s(1,1,1);
+        if (scale->floats.size() >= 3) s = Vec3Of(scale);
+        else if (scale->floats.size() == 1) s = Vec3(scale->floats[0],scale->floats[0],scale->floats[0]);
+        for (int c = 0; c < 3; c++) {
+            if (!std::isfinite(s[c]) || s[c] <= 0) Fatal("DMX transform scale must be finite and positive");
+            for (int r = 0; r < 3; r++) m.m[r][c] *= s[c];
+        }
+    }
+    return m;
 }
 
 }  // namespace
@@ -520,7 +530,7 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
         }
     }
     for (size_t i = 0; i < src->bones.size(); i++) {
-        Mat3x4 m = AngleMatrix(bind[i].rot, bind[i].pos);
+        Mat3x4 m = AngleMatrix(bind[i].rot, bind[i].pos, bind[i].scale);
         world[i] = src->bones[i].parent >= 0 ? Concat(world[src->bones[i].parent], m) : m;
     }
     src->frames.push_back(bind);
@@ -536,12 +546,69 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
         }
         const Elem* shape = doc.Child(e, "shape");
         if (shape && IEquals(shape->type, "DmeMesh")) {
+            Mat3x4 normalMatrix = Invert(here);
             const Elem* vd = doc.Child(shape, "currentState");
             if (!vd) {
                 auto bs = doc.Children(shape, "baseStates");
                 if (!bs.empty()) vd = bs[0];
             }
             if (vd) {
+                std::vector<std::shared_ptr<SrcCollisionPlanes>> collisionPlanes;
+                for (auto* group : doc.Children(vd,"r2c_collision_planes")) {
+                    const Attr* first = group->Get("firstPolygon");
+                    const Attr* count = group->Get("faceCount");
+                    const Attr* planes = group->Get("planes");
+                    if (!first || first->ints.size()!=1 || first->ints[0]<0 ||
+                        !count || count->ints.size()!=1 || count->ints[0]<4 || count->ints[0]>255 ||
+                        !planes || planes->Components()!=4 || planes->floats.size()%4 ||
+                        planes->floats.size()<static_cast<size_t>(count->ints[0])*4 || planes->floats.size()>255*4)
+                        Fatal("%s: malformed r2c_collision_planes",path.c_str());
+                    auto stored = std::make_shared<SrcCollisionPlanes>();
+                    if (first->ints[0]>INT32_MAX-src->polygonCount) Fatal("%s: collision polygon index overflow",path.c_str());
+                    stored->firstPolygon = src->polygonCount+first->ints[0]; stored->faceCount=count->ints[0];
+                    for (size_t i=0;i<planes->floats.size();i+=4) {
+                        Vec4 plane{planes->floats[i],planes->floats[i+1],planes->floats[i+2],planes->floats[i+3]};
+                        for (int k=0;k<4;k++) if (!std::isfinite((&plane.x)[k])) Fatal("%s: nonfinite collision plane",path.c_str());
+                        float length=Length(Vec3(plane.x,plane.y,plane.z));
+                        if (length<.99f || length>1.01f) Fatal("%s: invalid collision plane normal",path.c_str());
+                        stored->planes.push_back(plane);
+                    }
+                    const Attr* vertices = group->Get("verticesIVP");
+                    const Attr* triangles = group->Get("triangles");
+                    if (vertices || triangles) {
+                        if (!vertices || vertices->Components()!=3 || vertices->floats.size()%3 ||
+                            !triangles || triangles->ints.empty() || triangles->ints.size()%7 || triangles->ints.size()/7>4095)
+                            Fatal("%s: malformed stored physics surface",path.c_str());
+                        for (size_t i=0;i<vertices->floats.size();i+=3) {
+                            Vec3 p(vertices->floats[i],vertices->floats[i+1],vertices->floats[i+2]);
+                            if (!std::isfinite(p.x)||!std::isfinite(p.y)||!std::isfinite(p.z)) Fatal("%s: nonfinite stored physics point",path.c_str());
+                            stored->verticesIVP.push_back(p);
+                        }
+                        int nt=static_cast<int>(triangles->ints.size()/7);
+                        for (size_t i=0;i<triangles->ints.size();i+=7) {
+                            std::array<int,7> t;
+                            for (int k=0;k<7;k++) t[k]=triangles->ints[i+k];
+                            for (int k=0;k<3;k++) if (t[k]<0 || t[k]>=static_cast<int>(stored->verticesIVP.size())) Fatal("%s: stored physics point index out of range",path.c_str());
+                            if (t[3]<0||t[3]>=nt||t[4]<0||t[4]>=nt||t[5]<0||t[5]>127||t[6]<0||t[6]>15)
+                                Fatal("%s: invalid stored physics triangle",path.c_str());
+                            stored->triangles.push_back(t);
+                        }
+                        std::set<int> triangleIndices;
+                        std::set<std::pair<int,int>> edges;
+                        for (auto& t : stored->triangles) {
+                            if (!triangleIndices.insert(t[3]).second)
+                                Fatal("%s: duplicate stored physics triangle index",path.c_str());
+                            for (int k=0;k<3;k++) {
+                                int a=t[k],b=t[(k+1)%3];
+                                if (a==b || !edges.insert({a,b}).second)
+                                    Fatal("%s: invalid stored physics edge",path.c_str());
+                            }
+                        }
+                        for (auto& edge : edges) if (!edges.count({edge.second,edge.first}))
+                            Fatal("%s: stored physics surface is not closed",path.c_str());
+                    }
+                    collisionPlanes.push_back(stored);
+                }
                 auto attr = [&](std::initializer_list<const char*> names) -> const Attr* {
                     for (auto* n : names)
                         if (auto* a = vd->Get(n)) return a;
@@ -565,6 +632,7 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                 const Attr* ji = attr({"jointIndices", "blendindices$0"});
                 const Attr* jc = vd->Get("jointCount");
                 const Attr* flipV = vd->Get("flipVCoordinates");
+                const Attr* modelSpace = vd->Get("r2c_model_space");
                 bool flip = flipV && !flipV->ints.empty() && flipV->ints[0];
                 int jointCount = jc && !jc->ints.empty() ? jc->ints[0] : 0;
                 if (!pos || !posIdx) Fatal("%s: mesh %s has no positions", path.c_str(), e->name.c_str());
@@ -591,11 +659,14 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                     std::vector<int> poly;
                     auto makeVert = [&](int loop) {
                         SrcVertex v;
+                        v.modelSpace = modelSpace && !modelSpace->ints.empty() && modelSpace->ints[0];
                         int pi = posIdx->ints[loop];
                         Vec3 p = Vec3Of(pos, pi);
                         v.pos = Transform(here, p);
-                        if (nrm && nrmIdx && loop < static_cast<int>(nrmIdx->ints.size()))
-                            v.normal = Normalize(Rotate(here, Vec3Of(nrm, nrmIdx->ints[loop])));
+                        if (nrm && nrmIdx && loop < static_cast<int>(nrmIdx->ints.size())) {
+                            Vec3 normal = IRotate(normalMatrix, Vec3Of(nrm, nrmIdx->ints[loop]));
+                            v.normal = v.modelSpace ? normal : Normalize(normal);
+                        }
                         if (uv && uvIdx && loop < static_cast<int>(uvIdx->ints.size())) {
                             int ui = uvIdx->ints[loop];
                             v.uv = Vec2(uv->floats[ui * 2], uv->floats[ui * 2 + 1]);
@@ -615,8 +686,10 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                         }
                         if (tan && tanIdx && tan->Components() == 4 && loop < static_cast<int>(tanIdx->ints.size())) {
                             int ti = tanIdx->ints[loop];
-                            Vec3 t = Normalize(Rotate(here, Vec3(tan->floats[ti * 4], tan->floats[ti * 4 + 1], tan->floats[ti * 4 + 2])));
-                            v.tangent = {t.x, t.y, t.z, tan->floats[ti * 4 + 3] < 0 ? -1.f : 1.f};
+                            Vec3 source(tan->floats[ti * 4], tan->floats[ti * 4 + 1], tan->floats[ti * 4 + 2]);
+                            Vec3 transformed = Rotate(here, source);
+                            Vec3 t = v.modelSpace ? transformed : Normalize(transformed) * Length(source);
+                            v.tangent = {t.x, t.y, t.z, tan->floats[ti * 4 + 3]};
                             v.hasTangent = true;
                         }
                         if (vid && vidIdx && loop < static_cast<int>(vidIdx->ints.size())) {
@@ -661,6 +734,9 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                             SrcFace face;
                             face.material = matIndex;
                             face.polygon = polygon;
+                            for (auto& stored : collisionPlanes)
+                                if (polygon>=stored->firstPolygon && polygon-stored->firstPolygon<stored->faceCount)
+                                    face.collisionPlanes=stored;
                             int base = static_cast<int>(src->vertices.size());
                             src->vertices.push_back(makeVert(poly[0]));
                             src->vertices.push_back(makeVert(poly[k]));
@@ -673,6 +749,9 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
                         poly.clear();
                     }
                 }
+                for (auto& stored : collisionPlanes)
+                    if (stored->firstPolygon>src->polygonCount || stored->faceCount>src->polygonCount-stored->firstPolygon)
+                        Fatal("%s: stored collision polygon range out of bounds",path.c_str());
                 // Loose vertices (positions no face uses) are kept as unreferenced source
                 // vertices: a collision mesh can carry points lying on a piece's surface,
                 // as retail convex pieces keep cylinder-cap centres.
@@ -708,7 +787,8 @@ std::shared_ptr<Source> LoadDMX(const std::string& path) {
         for (auto& v : src->vertices)
             for (auto& w : v.weights)
                 if (w.bone == 0) used = true;
-        if (!used) {
+        const Vec3 modelScale = bind[0].scale;
+        if (!used && modelScale.x == 1 && modelScale.y == 1 && modelScale.z == 1) {
             src->bones.erase(src->bones.begin());
             for (auto& b : src->bones) b.parent = b.parent <= 0 ? -1 : b.parent - 1;
             for (auto& v : src->vertices)

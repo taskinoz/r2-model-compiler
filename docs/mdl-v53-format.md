@@ -56,6 +56,8 @@ independent reader used for surveys and comparisons.
   (outside the checksummed body).
 - Used by animated single-player props (doors, cranes, platforms) whose physics
   follows their animation; no `mp_common` model has them.
+- Bone flag 0x80000 marks each follower and its ancestors. The ancestor closure
+  reproduces every occurrence across the 4,024-model MP/SP corpus (28 models).
 
 ## LODs
 
@@ -63,6 +65,13 @@ studiomdl keeps `$lod` script order. Switch distances are not sorted; retail has
 models whose LOD 1 switches at 250 and LOD 2 at 40.
 
 ## Embedded VTX / VVD / VVC / PHY
+
+Native VVD vertices already use final model space. Decompiled render DMX data is
+tagged `r2c_model_space` so a bind-space round trip does not perturb large
+coordinates. `flipVCoordinates = false` preserves stored UVs directly, including
+values whose float32 subtraction from one is lossy. Native normals and tangents
+can be non-unit and are retained literally. All emitted numeric vertex fields use
+nine significant digits; positive skin weights below five percent are retained.
 
 - VTX header is always version 7, vertCacheSize 24, maxBonesPerStrip 160,
   maxBonesPerFace 9, maxBonesPerVert 3.
@@ -78,14 +87,16 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
   across a mesh boundary, even when adjacent runs share a LOD.
 - VVD/VVC `numLODVertexes[l]`: with a fixup table, the end offset of the last run that
   LOD `l` uses, not the number of vertices it uses (so LOD 1 often equals LOD 0).
-  Without one, the true count. Slots past the LOD count repeat the last LOD's value.
+  Without one, the true count. A real empty LOD retains zero. Slots past the LOD
+  count normally repeat the last LOD's value; some retail headers leave them zero.
   The VVC header holds the same counts as the VVD header.
 - Vertex identity: retail keeps vertices that match in position, normal, UV and
   weights apart when their tangents differ (about 52,000 such pairs in LOD 0 alone).
   The split comes from the source mesh, so it cannot be rebuilt from geometry alone.
 - 49 `mp_common` models (2,112 vertices) have mesh vertices no triangle of any LOD
   uses, leftovers of the source mesh. They still count in the vertex totals and in the
-  bones' vertex-LOD flags. The decompiler does not keep them.
+  bones' vertex-LOD flags. The decompiler keeps them in DMX face sets marked
+  `r2c_vertices_only`.
 - Sequence boxes are not always what the animation gives: some retail reload
   sequences are offset about 110 units along x, from offset source animations.
 - Mesh order within a model follows the source's material order, not texture index.
@@ -98,6 +109,15 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
 - Jointed models can have several convex pieces per joint without a `"concave"` key in
   the PHY text (studiomdl's `$concaveperjoint`). `$concave` on a rigid model does
   write `"concave" "1"`.
+- PHY solid metadata retains independent mass, damping, rotational damping,
+  inertia, surface material and physical parent. The physical parent need not
+  imply a ragdoll constraint. Some Titan root solids name themselves as parent.
+- Compact surfaces store a mass center, normalized inertia, three drag axes and
+  an upper-limit radius independently of the triangulated convex surface. They
+  must not be inferred from volume alone when validating a round trip.
+- Rigid PHY vertices are in entity space even on animated models; jointed PHY
+  vertices are in the owning bone's local space. Exporting a rigid collision mesh
+  requires undoing the source import's default rotation in both cases.
 
 ## Per-triangle AABB block
 
@@ -135,7 +155,16 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
   `(numframes - 1) / sectionframes + 2` section offsets.
 - An empty animation is a single record with bone 255 and flags 0.
 - `posscale` is per bone for the whole animation (identical in every RLE section).
-- One-frame chains (the trailing section and single-frame animations) are always raw.
+- Retail one-frame chains (the trailing section and single-frame animations) use
+  raw values. The engine also accepts RLE here: a one-frame RLE pose and a two-frame
+  control produced identical attachment coordinates in Northstar. The compiler
+  chooses raw or RLE by decoded precision.
+- Constant-channel detection excludes a section's shared next frame, including
+  the final partial section: its final frame has a separate trailing chain.
+- RLE Euler angles must be preserved before conversion through a matrix. A pitch
+  beyond 90 degrees can map to an equivalent Euler branch outside the original
+  bone's quantization range, causing clamping. Exporting the stored Euler channels
+  retains the original branch; ordinary root-yaw adjustment preserves it too.
   Retail never uses flags 0x0c.
 - A section's constant-value decision excludes the frame shared with the next
   section. The next section supplies that boundary pose; a jump there does not make
@@ -158,6 +187,13 @@ models whose LOD 1 switches at 250 and LOD 2 at 40.
   baking motion into the root bones and extracting it again.
 
 ## Bone scale animation
+
+Bone bind scale is independent of STUDIO_HAS_SCALE. Most bind scales are one,
+but BT has a 0.1 bind bone and several ship bones store near-unit values. An absent
+non-delta animation scale channel inherits that exact bind scale; dropping even
+near-unit values can force a constant frame to be encoded as a lossy raw half.
+The inverse bind matrix includes the scale. Scale animation RLE is relative to
+the bind scale, and must preserve that base rather than assuming one.
 
 - Scale lives at record +22: a Vector48 when RAWSCALE (0x08) is set, otherwise three
   value pointers. Decoded scale = bone scale + value * bone scalescale (delta
@@ -283,6 +319,24 @@ example, a sequence may weight the root 0 although its animation stores root rec
   neighbour's edge; both faces then split that edge. A few retail faces touch
   themselves (an outline passing a vertex twice), so two edges join the same pair of
   faces.
+
+Native PHY ledges are closed but not always perfectly convex: a nearly collinear
+triangle can put another piece vertex outside its infinite plane. Comparing their
+literal oriented surfaces avoids treating this native property as corruption.
+Decompiled collision DMX retains float32 IVP points, triangle material/virtual flags,
+triangle and pierce indices, and the map block's literal face and bevel planes.
+Edges and acceleration trees are reconstructed from this typed source data.
+For newly authored geometry, hull triangulation uses the serialized float32 metre
+grid when unit conversion would otherwise make a skinny face cut into its piece.
+
+An empty bodygroup model can retain a source filename despite having no meshes.
+The decompiler writes `blankname` for these entries; ordinary `blank` entries keep
+an empty name. Explicit native bone-usage masks replace generated usage bits, since
+six viewmodels do not mark every attachment ancestor as used by attachments.
+The fixed model-name field can occupy all 64 bytes. The compiler retains that full
+width rather than dropping the leading character to reserve a terminator; the
+following model-type field is zero in normal output. `ptpov_test` fills the name
+field and overlaps subsequent fields with source-path text in the retail file.
 
 ## Open questions
 

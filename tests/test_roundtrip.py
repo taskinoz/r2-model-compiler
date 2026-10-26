@@ -15,6 +15,25 @@ import structdiff
 
 
 class CorpusReports(unittest.TestCase):
+    def test_discard_sources_requires_owned_work_directory(self):
+        scratch=Path(__file__).resolve().parents[1]/'test-output';scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch) as temporary:
+            root=Path(temporary); source=root/'input.mdl'; source.write_bytes(b'input')
+            foreign=root/'foreign';foreign.mkdir();(foreign/'keep.txt').write_text('user file')
+            with self.assertRaisesRegex(ValueError,'unmarked'):
+                roundtrip.owned_workdir(foreign,root,source)
+            self.assertEqual((foreign/'keep.txt').read_text(),'user file')
+            folder=roundtrip.owned_workdir(root/'generated',root,source)
+            (folder/'recompiled.mdl').write_bytes(b'output')
+            (folder/'export.qc').write_text('generated')
+            (folder/'nested').mkdir();(folder/'nested'/'export.smd').write_text('generated')
+            roundtrip.discard_work_sources(folder)
+            self.assertEqual({p.name for p in folder.iterdir()},{'recompiled.mdl','.r2c-generated'})
+            with self.assertRaisesRegex(ValueError,'different input'):
+                roundtrip.owned_workdir(folder,root,root/'other.mdl')
+            with self.assertRaisesRegex(ValueError,'outside'):
+                roundtrip.owned_workdir(root/'nested'/'wrong',root,source)
+
     def test_structdiff_checks_duplicate_model_names(self):
         scratch = Path(__file__).resolve().parents[1] / 'test-output'
         scratch.mkdir(exist_ok=True)
@@ -68,7 +87,7 @@ class CorpusReports(unittest.TestCase):
                  mock.patch.object(roundtrip, 'summary', return_value={}), \
                  mock.patch.object(roundtrip, 'compare', return_value=[]), \
                  contextlib.redirect_stdout(io.StringIO()):
-                roundtrip.main()
+                self.assertEqual(roundtrip.main(),1)
             report = json.loads((output / 'results.json').read_text())
             self.assertEqual(report[inputs[0]]['status'], 'exception')
             self.assertEqual(report[inputs[1]]['status'], 'ok')
@@ -79,7 +98,7 @@ class CorpusReports(unittest.TestCase):
             with mock.patch.object(sys, 'argv', argv), \
                  mock.patch.object(roundtrip.dc, 'decompile') as decode, \
                  contextlib.redirect_stdout(io.StringIO()):
-                roundtrip.main()
+                self.assertEqual(roundtrip.main(),1)
                 decode.assert_not_called()
 
             compiler.write_bytes(b'version 2')

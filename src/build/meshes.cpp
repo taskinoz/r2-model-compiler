@@ -217,7 +217,9 @@ void BuildContext::BuildMeshes() {
         for (auto& sm : bp.models) {
             CModel om;
             SrcInst* base = bodyInsts[modelIndex++];
-            om.name = sm.blank ? "" : sm.file;
+            om.name = sm.file;
+            for (auto& alias : qc.modelSourceNames)
+                if (IEquals(alias.first, sm.file)) om.name = alias.second;
             om.blank = sm.blank || !base;
             if (om.blank) {
                 obp.models.push_back(om);

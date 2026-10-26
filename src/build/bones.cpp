@@ -100,10 +100,12 @@ void BuildContext::MakeStaticProp() {
             // merge into a single weight
             v.weights.resize(1);
             v.weights[0].weight = 1;
-            v.pos = Transform(rotated, v.pos);
-            v.normal = Rotate(rotated, v.normal);
-            Vec3 t = Rotate(rotated, Vec3(v.tangent.x, v.tangent.y, v.tangent.z));
-            v.tangent = {t.x, t.y, t.z, v.tangent.w};
+            if (!v.modelSpace) {
+                v.pos = Transform(rotated, v.pos);
+                v.normal = Rotate(rotated, v.normal);
+                Vec3 t = Rotate(rotated, Vec3(v.tangent.x, v.tangent.y, v.tangent.z));
+                v.tangent = {t.x, t.y, t.z, v.tangent.w};
+            }
         }
         if (qc.autoCenter) {
             // handled after bounds are known (see BuildMeshes)
@@ -129,25 +131,25 @@ void BuildContext::MakeStaticProp() {
 }
 
 void BuildContext::BuildRawTransforms(const SrcInst& s, int frame, float scale, const Vec3& shift, const RadianEuler& rotate,
-                                      std::vector<Mat3x4>& out) const {
+                                      std::vector<Mat3x4>& transforms) const {
     Mat3x4 rootxform = AngleMatrix(rotate);
     int nf = static_cast<int>(s.frames.size());
     if (frame) frame = frame % nf;
-    out.resize(s.bones.size());
+    transforms.resize(s.bones.size());
     for (size_t k = 0; k < s.bones.size(); k++) {
         Vec3 pos = s.frames[frame][k].pos * scale;
         RadianEuler rot = s.frames[frame][k].rot;
         if (s.bones[k].parent == -1) {
             pos = Rotate(rootxform, pos - shift);
-            Mat3x4 bm = Concat(rootxform, AngleMatrix(rot));
-            rot = MatrixAngles(bm);
+            if (rotate.x == 0 && rotate.y == 0) rot.z += rotate.z;
+            else rot = MatrixAngles(Concat(rootxform, AngleMatrix(rot)));
             ClipRotations(rot);
         }
-        Mat3x4 bonematrix = AngleMatrix(rot, pos);
+        Mat3x4 bonematrix = AngleMatrix(rot, pos, s.frames[frame][k].scale);
         if (s.bones[k].parent == -1)
-            out[k] = bonematrix;
+            transforms[k] = bonematrix;
         else
-            out[k] = Concat(out[s.bones[k].parent], bonematrix);
+            transforms[k] = Concat(transforms[s.bones[k].parent], bonematrix);
     }
 }
 
@@ -194,7 +196,15 @@ void BuildContext::ConvertAnimation(const SrcInst& s, int frame, float scale, co
     int fr = frame && nf ? frame % nf : 0;
     for (size_t k = 0; k < bones.size(); k++) {
         int p = bones[k].parent, q = s.globalToLocal[k];
-        if (p < 0 || q < 0 || scale != 1.f) continue;
+        if (q < 0) continue;
+        if (p < 0 && s.bones[q].parent == -1 && rotate.x == 0 && rotate.y == 0 && identity(bones[k].srcRealign)) {
+            dest[k].pos = Rotate(AngleMatrix(rotate),s.frames[fr][q].pos * scale - shift);
+            dest[k].rot = s.frames[fr][q].rot;
+            dest[k].rot.z += rotate.z;
+            ClipRotations(dest[k].rot);
+            continue;
+        }
+        if (p < 0 || scale != 1.f) continue;
         int sp = s.bones[q].parent;
         if (sp < 0 || s.localToGlobal[sp] != p) continue;
         if (!identity(bones[k].srcRealign) || !identity(bones[p].srcRealign)) continue;
@@ -259,7 +269,9 @@ void BuildContext::BuildBones() {
         }
         for (auto& p : qc.uiPanels)
             for (auto& name : p.parents) keep(name);
-        for (auto& name : qc.boneFollowers) keep(name);
+        for (auto& name : qc.boneFollowers)
+            for (size_t j = 0; j < s.bones.size(); j++)
+                if (IEquals(name, s.bones[j].name)) s.boneflags[j] |= BONE_USED_BY_BONE_FOLLOWER;
         for (auto& sa : qc.screenAlign)
             for (size_t j = 0; j < s.bones.size(); j++)
                 if (IEquals(sa.first, s.bones[j].name)) s.boneflags[j] |= sa.second;
@@ -286,7 +298,9 @@ void BuildContext::BuildBones() {
             if (!d.parent.empty() && b.parent == -1)
                 Warn("$definebone %s: parent bone %s not found", d.name.c_str(), d.parent.c_str());
             b.preDefined = true;
+            b.scale = d.scale;
             b.rawLocal = b.rawLocalOriginal = d.rawLocal;
+            b.rawRotation = d.rawRotation;
             bones.push_back(b);
             k = static_cast<int>(bones.size() - 1);
         }
@@ -311,8 +325,10 @@ void BuildContext::BuildBones() {
                 int n = s.bones[j].parent;
                 b.parent = n != -1 ? FindBone(s.bones[n].name) : -1;
                 b.flags = s.boneflags[j];
-                b.rawLocal = AngleMatrix(s.frames[0][j].rot, s.frames[0][j].pos);
+                b.scale = s.frames[0][j].scale;
+                b.rawLocal = AngleMatrix(s.frames[0][j].rot, s.frames[0][j].pos, b.scale);
                 b.rawLocalOriginal = b.rawLocal;
+                b.rawRotation = s.frames[0][j].rot;
                 b.boneToPose = srcBoneToWorld[j];
                 bones.push_back(b);
             } else {
@@ -321,6 +337,10 @@ void BuildContext::BuildBones() {
         }
     }
     if (bones.empty()) Fatal("model has no bones");
+    for (auto& bone : bones)
+        for (int c = 0; c < 3; c++)
+            if (!std::isfinite(bone.scale[c]) || bone.scale[c] <= 0)
+                Fatal("bone '%s': bind scale must be finite and positive", bone.name.c_str());
 
     // --- BuildGlobalBoneToPose
     for (size_t k = 0; k < bones.size(); k++) {
@@ -330,6 +350,8 @@ void BuildContext::BuildBones() {
             bones[k].boneToPose = Concat(bones[bones[k].parent].boneToPose, bones[k].rawLocal);
     }
 
+    std::map<std::string,std::string> originalParents;
+    for (auto& b : bones) originalParents[b.name] = b.parent < 0 ? "" : bones[b.parent].name;
     // --- EnforceHierarchy
     for (auto& h : qc.hierarchy) {
         int k = FindBone(h.first);
@@ -414,11 +436,13 @@ void BuildContext::BuildBones() {
     {
         std::vector<Mat3x4> poseToBone(bones.size());
         for (size_t k = 0; k < bones.size(); k++) {
-            if (bones[k].parent == -1)
+            bool originalParent = originalParents[bones[k].name] == (bones[k].parent < 0 ? "" : bones[bones[k].parent].name);
+            if (originalParent) bones[k].rawLocal = bones[k].rawLocalOriginal;
+            else if (bones[k].parent == -1)
                 bones[k].rawLocal = bones[k].boneToPose;
             else
                 bones[k].rawLocal = Concat(poseToBone[bones[k].parent], bones[k].boneToPose);
-            bones[k].rot = MatrixAngles(bones[k].rawLocal);
+            bones[k].rot = originalParent ? bones[k].rawRotation : MatrixAngles(bones[k].rawLocal);
             bones[k].pos = bones[k].rawLocal.Origin();
             poseToBone[k] = Invert(bones[k].boneToPose);
         }
@@ -472,6 +496,7 @@ void BuildContext::BuildBones() {
                 if (bones[k].parent != -1 && children[bones[k].parent] == 1) childbone[bones[k].parent] = static_cast<int>(k);
         }
         std::vector<Mat3x4> boneToPose(bones.size());
+        std::vector<bool> realigned(bones.size(),false);
         for (size_t k = 0; k < bones.size(); k++) boneToPose[k] = bones[k].boneToPose;
         for (size_t k = 0; k < bones.size(); k++) {
             if (bones[k].preAligned || childbone[k] == -1) continue;
@@ -490,6 +515,7 @@ void BuildContext::BuildBones() {
             else
                 up = Normalize(Cross(forward, u2));
             Vec3 left = Cross(up, forward);
+            realigned[k] = true;
             for (int r = 0; r < 3; r++) {
                 boneToPose[k].m[r][0] = forward[r];
                 boneToPose[k].m[r][1] = left[r];
@@ -501,21 +527,23 @@ void BuildContext::BuildBones() {
             int k = FindBone(fr.bone);
             if (k == -1) Fatal("unknown bone %s in $forcerealign", fr.bone.c_str());
             boneToPose[k] = Concat(boneToPose[k], AngleMatrix(fr.rot));
+            realigned[k] = true;
         }
         for (size_t k = 0; k < bones.size(); k++) {
             if (bones[k].preAligned) continue;
-            bones[k].srcRealign = Concat(Invert(bones[k].boneToPose), boneToPose[k]);
+            bones[k].srcRealign = realigned[k] ? Concat(Invert(bones[k].boneToPose), boneToPose[k]) : Mat3x4();
             bones[k].boneToPose = boneToPose[k];
         }
         for (size_t k = 0; k < bones.size(); k++) {
             if (bones[k].preAligned) continue;
+            if (!realigned[k] && (bones[k].parent < 0 || !realigned[bones[k].parent])) continue;
             Mat3x4 bm = bones[k].parent == -1 ? bones[k].boneToPose
                                               : Concat(Invert(bones[bones[k].parent].boneToPose), bones[k].boneToPose);
             bones[k].rot = MatrixAngles(bm);
             bones[k].pos = bm.Origin();
         }
         for (size_t k = 0; k < bones.size(); k++) {
-            Mat3x4 bm = AngleMatrix(bones[k].rot, bones[k].pos);
+            Mat3x4 bm = AngleMatrix(bones[k].rot, bones[k].pos, bones[k].scale);
             bones[k].boneToPose = bones[k].parent == -1 ? bm : Concat(bones[bones[k].parent].boneToPose, bm);
         }
     }
@@ -546,6 +574,7 @@ void BuildContext::RemapVertices() {
                         merged = true;
                     }
                 if (!merged) o.weights.push_back({k, w.weight});
+                if (v.modelSpace) continue;
                 Vec3 local = Transform(invDest[k], v.pos);
                 vdest += Transform(bones[k].boneToPose, local) * w.weight;
                 Vec3 ln = Rotate(invDest[k], v.normal);
@@ -553,10 +582,10 @@ void BuildContext::RemapVertices() {
                 Vec3 lt = Rotate(invDest[k], Vec3(v.tangent.x, v.tangent.y, v.tangent.z));
                 tdest += Rotate(bones[k].boneToPose, lt) * w.weight;
             }
-            o.pos = vdest;
-            o.normal = Normalize(ndest);
-            if (v.hasTangent) {
-                Vec3 t = Normalize(tdest);
+            o.pos = v.modelSpace ? v.pos : vdest;
+            o.normal = v.modelSpace ? v.normal : Normalize(ndest);
+            if (v.hasTangent && !v.modelSpace) {
+                Vec3 t = Normalize(tdest) * Length(Vec3(v.tangent.x,v.tangent.y,v.tangent.z));
                 o.tangent = {t.x, t.y, t.z, v.tangent.w};
             }
             // keep the strongest three (merging may have changed order)

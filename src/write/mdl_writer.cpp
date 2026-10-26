@@ -465,7 +465,7 @@ void MdlWriter::WriteBodyParts() {
             auto& md = bp.models[mi];
             size_t q = mbase + mi * kModelSize;
             std::string nm = md.name;
-            if (nm.size() > 63) nm = nm.substr(nm.size() - 63);
+            if (nm.size() > 64) nm = nm.substr(nm.size() - 64);
             std::memcpy(&b_.Data()[q], nm.data(), nm.size());
             b_.PatchAt<float>(q + 0x44, md.boundingRadius);
             b_.PatchI32(q + 0x48, static_cast<int>(md.meshes.size()));

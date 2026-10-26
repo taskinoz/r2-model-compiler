@@ -31,7 +31,7 @@ lines = ['version 1', 'proceduralbones', 'bone "axisbone" "root" "driver" "root"
 for k in range(6):
     lines.append('axis %d 0 -30 80 45 0 0' % k if k == 2 else 'axis %d 0 -30 20 0 0 0' % k)
 (out / 'axis.txt').write_text('\n'.join(lines + ['end']) + '\n')
-qc = ('$modelname "axis.mdl"\n$body body "body.smd"\n$attachment "cube_att" "axisbone" 0 0 0\n'
+qc = ('$modelname "axis.mdl"\n$cdmaterials ""\n$body body "body.smd"\n$attachment "cube_att" "axisbone" 0 0 0\n'
       '$sequence turn "turn.smd" fps 10\n$sequence half "half.smd" loop\n')
 (out / 'without.qc').write_text(qc)
 (out / 'with.qc').write_text(qc + '$proceduralbones "axis.txt"\n')

@@ -277,9 +277,10 @@ void Parser::CmdBodygroup() {
             ParseStudio(sm);
             sm.name = FileBase(sm.file);
             bp.models.push_back(sm);
-        } else if (Is("blank")) {
+        } else if (Is("blank") || Is("blankname")) {
             QcSubModel sm;
             sm.name = "blank";
+            if (Is("blankname")) sm.file = S("stored empty model name");
             sm.blank = true;
             bp.models.push_back(sm);
         } else
@@ -372,12 +373,27 @@ void Parser::CmdDefineBone() {
     d.parent = S("parent name");
     float px = F("x"), py = F("y"), pz = F("z");
     float ax = F("pitch"), ay = F("yaw"), az = F("roll");
-    d.rawLocal = AngleMatrix(QAngleToRadianEuler(ax, ay, az), Vec3(px, py, pz));
+    d.rawRotation = QAngleToRadianEuler(ax, ay, az);
+    d.rawLocal = AngleMatrix(d.rawRotation, Vec3(px, py, pz));
+    bool scaleNext = false;
     if (Avail()) {
+        tk_.Get(false); scaleNext = Is("scale"); tk_.Unget();
+    }
+    if (Avail() && !scaleNext) {
         d.preAligned = true;
         float rx = F("x"), ry = F("y"), rz = F("z");
         float bx = F("pitch"), by = F("yaw"), bz = F("roll");
         d.srcRealign = AngleMatrix(QAngleToRadianEuler(bx, by, bz), Vec3(rx, ry, rz));
+    }
+    if (Avail()) {
+        std::string option = S("definebone option");
+        if (!IEquals(option, "scale")) Fatal("unknown $definebone option '%s'", option.c_str());
+        d.scale = V3();
+        for (int c = 0; c < 3; c++) {
+            if (!std::isfinite(d.scale[c]) || d.scale[c] <= 0)
+                Fatal("$definebone scale must be finite and positive");
+            for (int r = 0; r < 3; r++) d.rawLocal.m[r][c] *= d.scale[c];
+        }
     }
     m_.defineBones.push_back(d);
 }
@@ -832,6 +848,13 @@ bool Parser::ParseAnimationToken(QcAnimation& a) {
     } else if (Is("posscale")) {
         std::string bone = S("bone");
         a.posScales.push_back({bone, F("position scale")});
+    } else if (Is("movementrecord")) {
+        QcAnimation::MovementRecord m;
+        m.endFrame = I("end frame");
+        m.motionFlags = I("motion flags");
+        m.v0 = F("initial speed"); m.v1 = F("final speed"); m.angle = F("angle");
+        m.vector = V3(); m.position = V3();
+        a.movementRecords.push_back(m);
     } else if (Is("defaultpose")) {
         // rsx marks animations that only hold the default pose; nothing to do
     } else if (ParseCmdlistToken(a.cmds)) {
@@ -1273,7 +1296,11 @@ void Parser::CmdCollision(bool joints) {
         return c.jointProps.back();
     };
     auto fl = [](const std::vector<std::string>& a, size_t i, float def = 0) {
-        return i < a.size() ? static_cast<float>(std::atof(a[i].c_str())) : def;
+        if (i >= a.size()) return def;
+        char* end = nullptr;
+        float value = std::strtof(a[i].c_str(),&end);
+        if (!end || end == a[i].c_str() || *end || !std::isfinite(value)) Fatal("invalid collision number '%s'",a[i].c_str());
+        return value;
     };
     while (tk_.Get(true)) {
         if (T() == "}") return;
@@ -1286,8 +1313,9 @@ void Parser::CmdCollision(bool joints) {
             c.inertia = fl(args(1), 0);
         else if (IEquals(cmd, "$damping"))
             c.damping = fl(args(1), 0);
-        else if (IEquals(cmd, "$rotdamping"))
-            c.rotdamping = fl(args(1), 0);
+        else if (IEquals(cmd, "$rotdamping")) {
+            c.rotdamping = fl(args(1), 0); c.explicitRotDamping = true;
+        }
         else if (IEquals(cmd, "$drag"))
             c.drag = fl(args(1), 0);
         else if (IEquals(cmd, "$rollingdrag"))
@@ -1347,7 +1375,7 @@ void Parser::CmdCollision(bool joints) {
             c.constraints.push_back(jc);
         } else if (IEquals(cmd, "$jointinertia")) {
             auto a = args(2);
-            if (a.size() == 2) jointProp(a[0]).inertia = fl(a, 1);
+            if (a.size() == 2) { jointProp(a[0]).inertia = fl(a, 1); jointProp(a[0]).inertiaSet = true; }
         } else if (IEquals(cmd, "$jointdamping")) {
             auto a = args(2);
             if (a.size() == 2) jointProp(a[0]).damping = fl(a, 1);
@@ -1357,8 +1385,36 @@ void Parser::CmdCollision(bool joints) {
         } else if (IEquals(cmd, "$jointmassbias")) {
             auto a = args(2);
             if (a.size() == 2) jointProp(a[0]).massBias = fl(a, 1);
+        } else if (IEquals(cmd, "$collisionname")) {
+            auto a = args(1); if (a.size() == 1) c.solidName = a[0];
+        } else if (IEquals(cmd, "$jointmass")) {
+            auto a = args(2);
+            if (a.size() != 2 || !std::isfinite(fl(a,1)) || fl(a,1) < 0) Fatal("invalid $jointmass");
+            jointProp(a[0]).mass = fl(a,1);
+        } else if (IEquals(cmd, "$jointdrag")) {
+            auto a = args(2);
+            if (a.size() != 2 || !std::isfinite(fl(a,1))) Fatal("invalid $jointdrag");
+            jointProp(a[0]).drag = fl(a,1);
+        } else if (IEquals(cmd, "$jointsurfaceprop")) {
+            auto a = args(2); if (a.size() != 2) Fatal("invalid $jointsurfaceprop");
+            jointProp(a[0]).surfaceProp = a[1];
+        } else if (IEquals(cmd, "$jointparent")) {
+            auto a = args(2); if (a.size() != 2) Fatal("invalid $jointparent");
+            jointProp(a[0]).parent = a[1]; jointProp(a[0]).parentSet = true;
+        } else if (IEquals(cmd, "$ivpsurface")) {
+            auto a = args(12); if (a.size() != 12) Fatal("invalid $ivpsurface");
+            for (size_t i = 1; i < a.size(); i++) if (!std::isfinite(fl(a,i))) Fatal("nonfinite $ivpsurface");
+            auto& j = jointProp(a[0]); j.storedSurface = true;
+            j.storedCenter = Vec3(fl(a,1),fl(a,2),fl(a,3));
+            j.storedInertia = Vec3(fl(a,4),fl(a,5),fl(a,6));
+            j.storedDrag = Vec3(fl(a,7),fl(a,8),fl(a,9)); j.storedRadius = fl(a,10); j.storedVolume = fl(a,11);
+            for (int k = 0; k < 3; k++)
+                if (j.storedInertia[k] < 0 || j.storedDrag[k] < 0 || j.storedDrag[k] > 1) Fatal("invalid $ivpsurface properties");
+            if (j.storedRadius < 0 || j.storedVolume < 0) Fatal("invalid $ivpsurface radius/volume");
         } else if (IEquals(cmd, "$noselfcollisions"))
             c.noSelfCollisions = true;
+        else if (IEquals(cmd, "$explicitjointconstraints"))
+            c.explicitConstraints = true;
         else if (IEquals(cmd, "$jointcollide")) {
             auto a = args(2);
             if (a.size() == 2) c.collisionPairs.push_back({a[0], a[1]});
@@ -1784,6 +1840,58 @@ void Parser::Register() {
     };
     h["$bonemerge"] = [&] { m_.boneMerge.push_back(S("bone")); };
     h["$autohitboxes"] = [&] { m_.autoHitboxes = true; };
+    h["$generatedhitboxes"] = [&] { m_.generatedHitboxes = true; };
+    h["$respawnflag"] = [&] {
+        m_.respawnFlag = I("0 or 1");
+        if (m_.respawnFlag < 0 || m_.respawnFlag > 1) Fatal("$respawnflag must be 0 or 1");
+    };
+    h["$pertricollision"] = [&] {
+        m_.perTriMode = I("0 or 2");
+        if (m_.perTriMode != 0 && m_.perTriMode != 2) Fatal("$pertricollision must be 0 or 2");
+    };
+    h["$zerounusedlods"] = [&] { m_.zeroUnusedLods = true; };
+    h["$pertrimesh"] = [&] {
+        std::string name = S("per-triangle mesh file");
+        std::string path = ResolveSource(name, "pertri");
+        if (path.empty()) Fatal("could not find per-triangle mesh '%s'", name.c_str());
+        std::ifstream in(std::filesystem::u8path(path));
+        std::string magic; int version; uint64_t nv, nt;
+        auto bad = [&] { Fatal("malformed per-triangle mesh '%s'", name.c_str()); };
+        if (!(in >> magic >> version) || magic != "r2c_pertri" || version != 1) bad();
+        auto& mesh = m_.perTriMesh;
+        for (int c = 0; c < 3; c++) if (!(in >> mesh.bmin[c]) || !std::isfinite(mesh.bmin[c])) bad();
+        for (int c = 0; c < 3; c++)
+            if (!(in >> mesh.bmax[c]) || !std::isfinite(mesh.bmax[c]) || mesh.bmax[c] < mesh.bmin[c]) bad();
+        if (!(in >> nv >> nt)) bad();
+        auto bytes = std::filesystem::file_size(std::filesystem::u8path(path));
+        if (nv > bytes || nt > bytes || nv > UINT32_MAX || nt > UINT32_MAX) bad();
+        mesh.vertices.clear(); mesh.triangles.clear();
+        for (uint64_t i = 0; i < nv; i++) {
+            std::array<uint16_t,3> v;
+            for (int c = 0; c < 3; c++) { int64_t x; if (!(in >> x) || x < 0 || x > 65535) bad(); v[c] = static_cast<uint16_t>(x); }
+            mesh.vertices.push_back(v);
+        }
+        for (uint64_t i = 0; i < nt; i++) {
+            std::array<uint32_t,4> t;
+            for (int c = 0; c < 4; c++) {
+                int64_t x; if (!(in >> x) || x < 0 || (c < 3 ? static_cast<uint64_t>(x) >= nv : x > 65535)) bad();
+                t[c] = static_cast<uint32_t>(x);
+            }
+            mesh.triangles.push_back(t);
+        }
+        in >> std::ws; if (!in.eof()) bad();
+        mesh.present = true; m_.perTriMode = 2;
+    };
+    h["$boneusage"] = [&] {
+        std::string bone = S("bone");
+        int flags = I("bone usage flags");
+        if (flags < 0 || (flags & ~0xfff00)) Fatal("$boneusage only accepts bone usage bits");
+        m_.boneUsage.push_back({bone, flags});
+    };
+    h["$modelsource"] = [&] {
+        std::string source = S("source file");
+        m_.modelSourceNames.push_back({source, S("stored source name")});
+    };
     h["$srcbonetransform"] = [&] {
         QcModelDef::SrcBoneTransform t;
         t.bone = S("bone");

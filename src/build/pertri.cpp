@@ -26,6 +26,7 @@ struct PTri {
     uint32_t v[3];
     Vec3 centroid;
     Vec3 mn, mx;
+    int surfaceProp = -1;
 };
 
 }  // namespace
@@ -33,13 +34,14 @@ struct PTri {
 void BuildPerTriAABB(BuildContext& ctx) {
     CPerTri& pt = ctx.out.perTri;
     pt = CPerTri();
+    if (ctx.qc.perTriMode == 0) return;
     // static props, and props that may become static (prop_data "allowstatic" "1"),
     // get the tree; everything else is version 0, header only
     const std::string& kv = ctx.out.keyValues;
     size_t at = kv.find("\"allowstatic\"");
     if (at != std::string::npos) at = kv.find_first_not_of(' ', at + 13);
     bool allowStatic = at != std::string::npos && kv.compare(at, 3, "\"1\"") == 0;
-    if (!ctx.qc.staticProp && !allowStatic) return;
+    if (ctx.qc.perTriMode != 2 && !ctx.qc.staticProp && !allowStatic) return;
 
     // LOD 0 triangles of the default model of every body part. Like retail, each mesh
     // vertex is its own point (vertices that only share a position are not merged).
@@ -70,7 +72,19 @@ void BuildPerTriAABB(BuildContext& ctx) {
             }
         }
     }
+    const auto& source = ctx.qc.perTriMesh;
+    if (source.present) {
+        verts.clear(); tris.clear();
+        for (auto& v : source.vertices) verts.emplace_back(v[0], v[1], v[2]);
+        for (auto& t : source.triangles) {
+            PTri tri;
+            for (int c = 0; c < 3; c++) tri.v[c] = t[c];
+            tri.surfaceProp = static_cast<int>(t[3]);
+            tris.push_back(tri);
+        }
+    }
     pt.version = 2;
+    if (source.present) { pt.bmin = source.bmin; pt.bmax = source.bmax; }
     if (tris.empty()) return;
     // retail starts the maximum at FLT_MIN (smallest positive float), so a maximum
     // below zero is stored as FLT_MIN
@@ -80,8 +94,8 @@ void BuildPerTriAABB(BuildContext& ctx) {
         mn = Min(mn, v);
         mx = Max(mx, v);
     }
-    pt.bmin = mn;
-    pt.bmax = mx;
+    if (source.present) { mn = Vec3(); mx = Vec3(65535,65535,65535); }
+    else { pt.bmin = mn; pt.bmax = mx; }
     auto quant = [&](float v, int k, bool roundUp) -> uint16_t {
         float range = mx[k] - mn[k];
         if (range <= 0) return 0;
@@ -169,6 +183,12 @@ void BuildPerTriAABB(BuildContext& ctx) {
                         ordered.push_back(verts[tris[t].v[c]]);
                     }
                 }
+        if (source.present)
+            for (size_t i = 0; i < verts.size(); i++)
+                if (remap[i] == UINT32_MAX) {
+                    remap[i] = static_cast<uint32_t>(ordered.size());
+                    ordered.push_back(verts[i]);
+                }
         for (auto& t : tris)
             for (int c = 0; c < 3; c++) t.v[c] = remap[t.v[c]];
         verts = ordered;
@@ -219,7 +239,7 @@ void BuildPerTriAABB(BuildContext& ctx) {
                     if (rel > 65535) Fatal("per-triangle collision: leaf vertex range too large");
                     b.U16(static_cast<uint16_t>(rel));
                 }
-                b.U16(static_cast<uint16_t>(spIndex));
+                b.U16(static_cast<uint16_t>(t.surfaceProp >= 0 ? t.surfaceProp : spIndex));
             } else {
                 b.Zero(8);
             }

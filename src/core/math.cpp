@@ -55,13 +55,26 @@ Mat3x4 AngleMatrix(const RadianEuler& a, const Vec3& pos) {
     return m;
 }
 
-RadianEuler MatrixAngles(const Mat3x4& m) {
+Mat3x4 AngleMatrix(const RadianEuler& a, const Vec3& pos, const Vec3& scale) {
+    Mat3x4 m = AngleMatrix(a, pos);
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) m.m[r][c] *= scale[c];
+    return m;
+}
+
+RadianEuler MatrixAngles(const Mat3x4& input) {
+    Mat3x4 m = input;
+    for (int c = 0; c < 3; c++) {
+        float length = Length(m.Column(c));
+        if (length > 0 && std::fabs(length - 1.f) > 1e-5f)
+            for (int r = 0; r < 3; r++) m.m[r][c] /= length;
+    }
     float forward[3] = {m.m[0][0], m.m[1][0], m.m[2][0]};
     float left[3] = {m.m[0][1], m.m[1][1], m.m[2][1]};
     float up2 = m.m[2][2];
     float xyDist = std::sqrt(forward[0] * forward[0] + forward[1] * forward[1]);
     RadianEuler a;
-    if (xyDist > 0.001f) {
+    if (xyDist > 1e-6f) {
         a.z = std::atan2(forward[1], forward[0]);
         a.y = std::atan2(-forward[2], xyDist);
         a.x = std::atan2(left[2], up2);

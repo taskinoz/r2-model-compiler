@@ -2,7 +2,7 @@
 //
 // Matches studiomdl's conventions: texture V is flipped (1 - v), triangle winding is
 // reversed, material names lose their extension, and vertex weights are merged,
-// sorted, trimmed below 5% and clipped to the strongest three.
+// sorted and clipped to the strongest three. Positive sub-5% weights are retained.
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -32,7 +32,7 @@ void BalanceWeights(std::vector<BoneWeight>& w, size_t maxCount) {
                 w[j].weight = 0;
             }
     std::stable_sort(w.begin(), w.end(), [](const BoneWeight& a, const BoneWeight& b) { return a.weight > b.weight; });
-    while (w.size() > 1 && w.back().weight < 0.05f) w.pop_back();
+    while (w.size() > 1 && w.back().weight <= 0.f) w.pop_back();
     if (w.size() > maxCount) w.resize(maxCount);
     float t = 0;
     for (auto& b : w) t += b.weight;

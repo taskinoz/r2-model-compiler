@@ -43,7 +43,7 @@ def matrix_angles(m):
     fwd = (m[0][0], m[1][0], m[2][0])
     left = (m[0][1], m[1][1], m[2][1])
     xy = math.sqrt(fwd[0] ** 2 + fwd[1] ** 2)
-    if xy > 0.001:
+    if xy > 1e-10:
         yaw = math.atan2(fwd[1], fwd[0])
         pitch = math.atan2(-fwd[2], xy)
         roll = math.atan2(left[2], m[2][2])
@@ -80,6 +80,17 @@ def concat(a, b):
 
 def transform(m, v):
     return tuple(m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3] for i in range(3))
+
+
+def inverse_affine(m):
+    a,b,c=m[0][:3];d,e,f=m[1][:3];g,h,i=m[2][:3]
+    det=a*(e*i-f*h)-b*(d*i-f*g)+c*(d*h-e*g)
+    if abs(det)<1e-30:raise ValueError('singular source transform')
+    result=[[v/det for v in row]+[0.] for row in
+            ((e*i-f*h,c*h-b*i,b*f-c*e),(f*g-d*i,a*i-c*g,c*d-a*f),(d*h-e*g,b*g-a*h,a*e-b*d))]
+    translation=rotate(result,tuple(row[3] for row in m))
+    for k in range(3):result[k][3]=-translation[k]
+    return result
 
 
 def rotate(m, v):
@@ -178,7 +189,7 @@ def apply_root_motion(bones, pose, fm):
     return out
 
 
-def decode_anim(d, m, bones, ai, frame_indices=None, with_scale=False, absent=None):
+def decode_anim(d, m, bones, ai, frame_indices=None, with_scale=False, absent=None, with_euler=False):
     """Return descriptor, name and local poses in the requested frame order.
 
     Each pose entry is (pos, rotation matrix), or (pos, rotation matrix, scale) with
@@ -213,14 +224,18 @@ def decode_anim(d, m, bones, ai, frame_indices=None, with_scale=False, absent=No
             if flags & 0x04:
                 q = unpack_q64(struct.unpack_from('<Q', d, r + 8)[0])
                 rm = quat_matrix(q)
+                length=math.sqrt(sum(v*v for v in q))
+                euler=matrix_angles(quat_matrix(tuple(v/length for v in q))) if with_euler else None
             elif flags & 0x10:
                 rm = angle_matrix((0, 0, 0)) if delta else angle_matrix(b['rot'])
+                euler=(0,0,0) if delta else tuple(b['rot'])
             else:
                 offs = struct.unpack_from('<3h', d, r + 8)
                 ang = [extract(d, r + 8 + offs[c] if offs[c] > 0 else None, lf, b['rotscale'][c]) for c in range(3)]
                 if not delta:
                     ang = [ang[c] + b['rot'][c] for c in range(3)]
                 rm = angle_matrix(ang)
+                euler=tuple(ang)
             # position
             if flags & 0x02:
                 hs = struct.unpack_from('<3H', d, r + 16)
@@ -240,14 +255,17 @@ def decode_anim(d, m, bones, ai, frame_indices=None, with_scale=False, absent=No
                 if not delta:
                     scl = [scl[c] + b['scale'][c] for c in range(3)]
                 scl = tuple(scl)
-            pose[bone] = (pos, rm, scl) if with_scale else (pos, rm)
+            pose[bone] = (pos,rm)+((scl,) if with_scale else ())+((euler,) if with_euler else ())
             nxt = struct.unpack_from('<i', d, r + 28)[0]
             if nxt == 0:
                 break
             r += nxt
         out = []
         for bi, b in enumerate(bones):
-            one = ((1.0, 1.0, 1.0),) if with_scale else ()
+            one = ((1.0, 1.0, 1.0) if delta else tuple(b['scale']),) if with_scale else ()
+            angles=(0,0,0) if delta else tuple(b['rot'])
+            if absent is not None and absent[bi] is not None:angles=matrix_angles(absent[bi][1])
+            if with_euler:one+=(angles,)
             if bi in pose:
                 out.append(pose[bi])
             elif delta:
@@ -280,9 +298,11 @@ def write_smd(path, bones, skeleton_frames, tris=None):
             f.write('time %d\n' % t)
             for i, entry in enumerate(fr):
                 pos, rot = entry[0], entry[1]
-                line = '%d %s %s %s %s %s %s' % (i, fmt(pos[0]), fmt(pos[1]), fmt(pos[2]), fmt(rot[0]), fmt(rot[1]), fmt(rot[2]))
+                # Nine significant digits preserve float32 angles at +/-pi and
+                # near gimbal lock; six decimals can flip an RLE endpoint.
+                line = '%d %s' % (i, ' '.join('%.9g'%v for v in (*pos,*rot)))
                 if len(entry) > 2:  # optional local scale (r2-model-compiler SMD extension)
-                    line += ' %s %s %s' % tuple(fmt(v) for v in entry[2])
+                    line += ' %s %s %s' % tuple('%.9g' % v for v in entry[2])
                 f.write(line + '\n')
         f.write('end\n')
         if tris is not None:
@@ -316,7 +336,7 @@ def matrix_quaternion(m):
     return ((m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s)
 
 
-def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
+def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None, model_space=False, collision_planes=()):
     """A keyvalues2 DMX (model format 22) holding a skeleton and one mesh of polygons.
 
     skeleton: per bone (pos, RadianEuler rot), parent relative.
@@ -332,11 +352,11 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
     ids = (uuid.UUID(int=rng.getrandbits(128)) for _ in iter(int, 1))
     # keyvalues2 strings escape backslashes and quotes (material paths keep their slashes)
     q = lambda s: '"%s"' % str(s).replace('\\', '\\\\').replace('"', '\\"')
-    vec = lambda v: q(' '.join(fmt(x) for x in v))
+    vec = lambda v: q(' '.join('%.9g'%x for x in v))
 
-    def transform(name, pos, quat):
+    def transform(name, pos, quat, scale=(1, 1, 1)):
         return ('"DmeTransform"\n{\n"id" "elementid" %s\n"name" "string" %s\n"position" "vector3" %s\n'
-                '"orientation" "quaternion" %s\n}' % (q(next(ids)), q(name), vec(pos), vec(quat)))
+                '"orientation" "quaternion" %s\n"scale" "vector3" %s\n}' % (q(next(ids)), q(name), vec(pos), vec(quat), q(' '.join('%.9g'%v for v in scale))))
 
     joint_ids = [str(next(ids)) for _ in bones]
     order = list(joint_order) if joint_order is not None else list(range(len(bones)))
@@ -346,11 +366,12 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
         children[b['parent']].append(i)
 
     def joint(i):
-        pos, rot = skeleton[i]
+        pos, rot = skeleton[i][:2]
+        scale = skeleton[i][2] if len(skeleton[i]) > 2 else (1, 1, 1)
         kids = ',\n'.join(joint(c) for c in children[i])
         return ('"DmeJoint"\n{\n"id" "elementid" %s\n"name" "string" %s\n"transform" %s\n'
                 '"children" "element_array"\n[\n%s\n]\n}' % (
-                    q(joint_ids[i]), q(bones[i]['name']), transform(bones[i]['name'], pos, matrix_quaternion(angle_matrix(rot))), kids))
+                    q(joint_ids[i]), q(bones[i]['name']), transform(bones[i]['name'], pos, matrix_quaternion(angle_matrix(rot)), scale), kids))
 
     positions, weights = [], []                                  # per shared vertex
     loop_pos, normals, uvs, uv2s, colors, tangents, vids = [], [], [], [], [], [], []  # per polygon corner (loop)
@@ -383,7 +404,7 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
     blend_w, blend_i = [], []
     for w in weights:
         padded = list(w) + [(0, 0.0)] * (joint_count - len(w))
-        blend_w += [fmt(x[1]) for x in padded]
+        blend_w += ['%.9g'%x[1] for x in padded]
         blend_i += [str(slot[x[0]]) for x in padded]
     loops = [q(str(i)) for i in range(len(loop_pos))]
     arr = lambda kind, items: '"%s" [%s]' % (kind, ', '.join(items))
@@ -405,11 +426,25 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
         attrs.append('"r2c_vertex_id" %s\n"r2c_vertex_idIndices" %s' % (
             arr('int_array', [q(str(i if i is not None else -1)) for i in vids]), arr('int_array', loops)))
     fmt_names += ['blendweights$0', 'blendindices$0']
+    if model_space:attrs.append('"r2c_model_space" "bool" "1"')
+    if collision_planes:
+        groups=[]
+        for i,group in enumerate(collision_planes):
+            first,count,planes=group[:3]
+            geometry=''
+            if len(group)>3:
+                vertices,triangles=group[3:]
+                geometry='\n"verticesIVP" %s\n"triangles" %s'%(arr('vector3_array',[vec(p) for p in vertices]),
+                                arr('int_array',[q(str(v)) for t in triangles for v in t]))
+            groups.append('"DmeR2CCollisionPlanes"\n{\n"id" "elementid" %s\n"name" "string" "piece%d"\n'
+                          '"firstPolygon" "int" "%d"\n"faceCount" "int" "%d"\n"planes" %s%s\n}' %
+                          (q(next(ids)),i,first,count,arr('vector4_array',[vec(p) for p in planes]),geometry))
+        attrs.append('"r2c_collision_planes" "element_array" [\n'+',\n'.join(groups)+'\n]')
     mesh_id, vd_id, dag_id, model_id = (str(next(ids)) for _ in range(4))
     vertex_data = ('"DmeVertexData"\n{\n"id" "elementid" %s\n"name" "string" "bind"\n'
-                   '"vertexFormat" "string_array" [%s]\n"flipVCoordinates" "bool" "1"\n"jointCount" "int" "%d"\n'
+                   '"vertexFormat" "string_array" [%s]\n"flipVCoordinates" "bool" "%d"\n"jointCount" "int" "%d"\n'
                    '%s\n"blendweights$0" %s\n"blendindices$0" %s\n}') % (
-        q(vd_id), ', '.join(q(n) for n in fmt_names), joint_count, '\n'.join(attrs),
+        q(vd_id), ', '.join(q(n) for n in fmt_names), int(not model_space), joint_count, '\n'.join(attrs),
         arr('float_array', [q(w) for w in blend_w]), arr('int_array', [q(i) for i in blend_i]))
     mesh_name = os.path.splitext(os.path.basename(path))[0]
     face_sets = ',\n'.join(
@@ -435,15 +470,15 @@ def write_dmx(path, bones, skeleton, faces, loose=(), joint_order=None):
         f.write(model + '\n\n' + dag + '\n\n' + vertex_data + '\n')
 
 
-def write_dmx_mesh(path, bones, skeleton, polygons, material='phys', pieces=None, loose=(), joint_order=None):
+def write_dmx_mesh(path, bones, skeleton, polygons, material='phys', pieces=None, loose=(), joint_order=None, collision_planes=()):
     """write_dmx for a collision mesh: polygons of (pos, normal, [(bone, weight)]) corners,
     one material, and an optional piece id per polygon."""
     write_dmx(path, bones, skeleton,
               [(material, pieces[k] if pieces else 0, [(p, n, w, {}) for p, n, w in poly]) for k, poly in enumerate(polygons)],
-              loose, joint_order)
+              loose, joint_order,collision_planes=collision_planes)
 
 
-def collision_block_faces(d, h, bones):
+def collision_block_faces(d, h, bones, with_planes=False):
     """Map-collision block entries as (vertices, faces); each face lists its vertex
     indices in order around its plane normal. Retail faces are the source mesh's
     polygons, so they carry the grouping that triangle sources lose."""
@@ -472,8 +507,41 @@ def collision_block_faces(d, h, bones):
             rel = lambda v: [verts[v][k] - c[k] for k in range(3)]
             loop.sort(key=lambda v: math.atan2(sum(x * y for x, y in zip(rel(v), w)), sum(x * y for x, y in zip(rel(v), u))))
             faces.append(loop)
-        out.append((verts, faces))
+        out.append((verts,faces,planes) if with_planes else (verts,faces))
     return out
+
+
+def decode_pertri_mesh(d, h):
+    """Quantized triangle-collision source, independent of its acceleration tree."""
+    o=h['perTriAABBIndex']
+    if not o or struct.unpack_from('<i',d,o)[0] != 2:
+        return None
+    nn,nl,nv=(h[k] for k in ('perTriAABBNodeCount','perTriAABBLeafCount','perTriAABBVertCount'))
+    leaves=o+60+nn*20; vertices=leaves+nl*112
+    if min(nn,nl,nv)<0 or vertices+nv*6>len(d):
+        raise ValueError('per-triangle collision outside file')
+    points=[struct.unpack_from('<3H',d,vertices+i*6) for i in range(nv)]
+    triangles=[]
+    for i in range(nl):
+        at=leaves+i*112; base=struct.unpack_from('<i',d,at+12)[0]
+        for j in range(12):
+            record=struct.unpack_from('<4H',d,at+16+8*j)
+            ids=tuple(base+v for v in record[:3])
+            if any(v<0 or v>=nv for v in ids): raise ValueError('per-triangle vertex index outside file')
+            a,b,c=(points[v] for v in ids)
+            u=tuple(b[k]-a[k] for k in range(3)); v=tuple(c[k]-a[k] for k in range(3))
+            if not any((u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0])):
+                continue  # padding and zero-area triangles cannot collide
+            triangles.append(ids+(record[3],))
+    return {'bounds':struct.unpack_from('<6f',d,o+4),'vertices':points,'triangles':triangles}
+
+
+def write_pertri_mesh(path, mesh):
+    with open(path,'w',newline='\n') as output:
+        output.write('r2c_pertri 1\n'+' '.join('%.9g'%v for v in mesh['bounds'])+'\n')
+        output.write('%d %d\n'%(len(mesh['vertices']),len(mesh['triangles'])))
+        for rows in (mesh['vertices'],mesh['triangles']):
+            for row in rows: output.write(' '.join(str(v) for v in row)+'\n')
 
 
 def decode_ik_rules(d, h, ai):
@@ -620,8 +688,9 @@ def ik_rule_options(d, h, ai, a, bones, chain_names, chain_ends, delta, outdir=N
             o += ' fakeorigin %s %s %s' % tuple(fmt(v) for v in r['pos'])
         if kind == 'attachment' and 0 <= r['bone'] < len(bones) and r['bone'] != chain_ends[r['chain']]:
             o += ' bone "%s"' % bones[r['bone']]['name']
-        if outdir and r['compressedikerrorindex']:
+        if outdir:
             o += ' storedtarget ' + ' '.join('%.9g' % v for v in (*r['pos'], *r['q']))
+        if outdir and r['compressedikerrorindex']:
             # retail's error stream as stored (r2c "errors"): recomputing it from the
             # re-encoded animation lands a little off, and some retail streams are stale
             co = r['offset'] + r['compressedikerrorindex']
@@ -836,7 +905,11 @@ def decompile(path, outdir):
         b['pos'] = tuple(b['pos'])
         b['rot'] = tuple(b['rot'])
 
-    def local_frame_to_smd(bi, pos, rm, root_fix):
+    def local_frame_to_smd(bi, pos, rm, root_fix, angles=None):
+        if angles is not None:
+            if root_fix and bones[bi]['parent']==-1:
+                return rotate(ROT_M90,pos),(angles[0],angles[1],angles[2]-math.pi/2)
+            return pos,angles
         if root_fix and bones[bi]['parent'] == -1:
             mm = [row[:] for row in rm]
             for i in range(3):
@@ -882,12 +955,22 @@ def decompile(path, outdir):
         extra = {'color': tuple(c / 255.0 for c in d[o + vvc['colorDataStart'] + 4 * i:o + vvc['colorDataStart'] + 4 * i + 4])}
         if has_uv2:
             u2 = struct.unpack_from('<2f', d, o + vvc['uv2DataStart'] + 8 * i)
-            extra['uv2'] = (u2[0], 1 - u2[1])
+            extra['uv2'] = u2
         return extra
 
     qc = ['$modelname "%s"' % (mdl53.cstr(d, h['sznameindex']) if h['sznameindex'] else h['name'])]  # full name; the inline one is cut at 64
     if static:
         qc.append('$staticprop')
+    qc.append('$respawnflag %d' % bool(h['flags'] & 0x800000))
+    if h['perTriAABBIndex']:
+        qc.append('$pertricollision %d' % struct.unpack_from('<i', d, h['perTriAABBIndex'])[0])
+        pertri=decode_pertri_mesh(d,h)
+        if pertri is not None:
+            collision_source=base+'.pertri'
+            write_pertri_mesh(os.path.join(outdir,collision_source),pertri)
+            qc.append('$pertrimesh "%s"'%collision_source)
+    if vvd and vvd['numLODs'] < 8 and not any(vvd['numLODVertexes'][vvd['numLODs']:]):
+        qc.append('$zerounusedlods')
     for c in cds:
         qc.append('$cdmaterials "%s"' % c)
     surf = mdl53.cstr(d, h['surfacepropindex'])
@@ -924,9 +1007,12 @@ def decompile(path, outdir):
         qc.append('$definebone "%s" "%s" %s %s %s %s %s %s 0 0 0 0 0 0' % (
             b['name'], parent, fmt(b['pos'][0]), fmt(b['pos'][1]), fmt(b['pos'][2]),
             fmt(math.degrees(ang[1])), fmt(math.degrees(ang[2])), fmt(math.degrees(ang[0]))))
+        if any(v != 1 for v in b['scale']):
+            qc[-1] += ' scale ' + ' '.join('%.9g' % v for v in b['scale'])
     # bones listed for bone merge (the flag cannot be derived; retail sets it per model)
     if not static:
         for b in bones:
+            qc.append('$boneusage "%s" %d' % (b['name'], b['flags'] & 0xfff00))
             if b['flags'] & 0x40000:
                 qc.append('$bonemerge "%s"' % b['name'])
     # retail rotation quantization scales (r2c extension): recomputing them from decoded
@@ -963,12 +1049,14 @@ def decompile(path, outdir):
         bp = mdl53.u(mdl53.BODYPART_FIELDS, d, bo)
         bpname = mdl53.cstr(d, bo + bp['sznameindex'])
         entries = []
+        blank_names = {}
         vstart = 0
         for mi in range(bp['nummodels']):
             mo = bo + bp['modelindex'] + mi * mdl53.size(mdl53.MODEL_FIELDS)
             md = mdl53.u(mdl53.MODEL_FIELDS, d, mo)
             vstart = md['vertexindex'] // 48
             if md['nummeshes'] == 0 or not vtx:
+                blank_names[mi] = md['name']
                 entries.append(None)
                 continue
             meshes = [mdl53.u(mdl53.MESH_FIELDS, d, mo + md['meshindex'] + k * 0x74) for k in range(md['nummeshes'])]
@@ -978,11 +1066,7 @@ def decompile(path, outdir):
             def corner(vi):
                 pos, nrm, uv, w = vvd_vertex(vi)
                 tan = vvd_tangent(vi)
-                if static:
-                    pos = rotate(ROT_M90, pos)
-                    nrm = rotate(ROT_M90, nrm)
-                    tan = tuple(rotate(ROT_M90, tan[:3])) + (tan[3],)
-                extra = dict(vvc_extra(vi) if vvc else {}, uv=(uv[0], 1 - uv[1]), tangent=tan, id=vi)
+                extra = dict(vvc_extra(vi) if vvc else {}, uv=uv, tangent=tan, id=vi)
                 return (pos, nrm, w, extra)
             # mesh vertices no triangle of any LOD uses; each belongs to the coarsest LOD
             # whose vertex count covers it (meshes store their vertices coarse-first)
@@ -1022,10 +1106,12 @@ def decompile(path, outdir):
                 # which also decide which vertices studiomdl kept apart
                 smd_name = (lod == 0 and source_name(md['name'])) or '%s_bp%d_m%d_lod%d.dmx' % (base, bpi, mi, lod)
                 os.makedirs(os.path.dirname(os.path.join(outdir, smd_name)), exist_ok=True)
-                skel = [[(b['pos'], b['rot']) for b in bones]]
+                skel = [[(b['pos'], b['rot'], b['scale']) for b in bones]]
                 if static:
                     skel = [[((0, 0, 0), (0, 0, 0)) for b in bones]]
-                write_dmx(os.path.join(outdir, smd_name), bones, skel[0], [(t[0], 0) + t[1:] for t in tris])
+                write_dmx(os.path.join(outdir, smd_name), bones, skel[0], [(t[0], 0) + t[1:] for t in tris],model_space=True)
+                if lod == 0 and smd_name != md['name']:
+                    qc.append('$modelsource "%s" "%s"' % (smd_name, md['name']))
                 names.append(smd_name)
                 if lod:
                     lod_models.setdefault(lod, []).append((names[0], smd_name))
@@ -1036,8 +1122,10 @@ def decompile(path, outdir):
             qc.append('$body "%s" "%s"' % (bpname, entries[0]))
         else:
             qc.append('$bodygroup "%s"\n{' % bpname)
-            for e in entries:
-                qc.append('\tstudio "%s"' % e if e else '\tblank')
+            for i,e in enumerate(entries):
+                if e: qc.append('\tstudio "%s"' % e)
+                elif blank_names.get(i): qc.append('\tblankname "%s"' % blank_names[i])
+                else: qc.append('\tblank')
             qc.append('}')
     for lod in range(1, num_lods):
         qc.append('$lod %s\n{' % fmt(switch[lod]))
@@ -1086,25 +1174,23 @@ def decompile(path, outdir):
         qc.append('%s %s %s %s rotate %s %s %s' % (
             att, fmt(mtx[0][3]), fmt(mtx[1][3]), fmt(mtx[2][3]),
             fmt(math.degrees(ang[1])), fmt(math.degrees(ang[2])), fmt(math.degrees(ang[0]))))
-    # hitboxes: generated ones are usually empty in retail; a few models have generated boxes
+    # Keep stored generated boxes too: their original source vertex set may be absent.
     if h['flags'] & 1:
-        if any(mdl53.u(mdl53.HBOXSET_FIELDS, d, h['hitboxsetindex'] + s * 12)['numhitboxes'] for s in range(h['numhitboxsets'])):
-            qc.append('$autohitboxes')
-    else:
-        for s in range(h['numhitboxsets']):
-            so = h['hitboxsetindex'] + s * 12
-            hs = mdl53.u(mdl53.HBOXSET_FIELDS, d, so)
-            qc.append('$hboxset "%s"' % mdl53.cstr(d, so + hs['sznameindex']))
-            for k in range(hs['numhitboxes']):
-                bo = so + hs['hitboxindex'] + k * 0x44
-                bb = mdl53.u(mdl53.BBOX_FIELDS, d, bo)
-                nm = mdl53.cstr(d, bo + bb['szhitboxnameindex']) if bb['szhitboxnameindex'] else ''
-                line = '$hbox %d "%s" %s %s %s %s %s %s' % (bb['group'], bones[bb['bone']]['name'], *(fmt(x) for x in bb['bbmin'] + bb['bbmax']))
-                if nm or bb['forceCritPoint']:
-                    line += ' "%s"' % nm
-                if bb['forceCritPoint']:
-                    line += ' %d' % bb['forceCritPoint']
-                qc.append(line)
+        qc.append('$generatedhitboxes')
+    for s in range(h['numhitboxsets']):
+        so = h['hitboxsetindex'] + s * 12
+        hs = mdl53.u(mdl53.HBOXSET_FIELDS, d, so)
+        qc.append('$hboxset "%s"' % mdl53.cstr(d, so + hs['sznameindex']))
+        for k in range(hs['numhitboxes']):
+            bo = so + hs['hitboxindex'] + k * 0x44
+            bb = mdl53.u(mdl53.BBOX_FIELDS, d, bo)
+            nm = mdl53.cstr(d, bo + bb['szhitboxnameindex']) if bb['szhitboxnameindex'] else ''
+            line = '$hbox %d "%s" %s %s %s %s %s %s' % (bb['group'], bones[bb['bone']]['name'], *(fmt(x) for x in bb['bbmin'] + bb['bbmax']))
+            if nm or bb['forceCritPoint']:
+                line += ' "%s"' % nm
+            if bb['forceCritPoint']:
+                line += ' %d' % bb['forceCritPoint']
+            qc.append(line)
     # pose parameters
     for i in range(h['numlocalposeparameters']):
         o = h['localposeparamindex'] + i * 0x14
@@ -1198,10 +1284,13 @@ def decompile(path, outdir):
         stored = anim_record_bones(d, h, ai)
         zeros = zero_in_seq.get(ai, set())
         absent = [ref_pose[bi] if bi in zeros and bi not in stored else None for bi in range(len(bones))] if ref_pose else None
-        a, name, frames = decode_anim(d, m, bones, ai, with_scale=True, absent=absent)
+        a, name, frames = decode_anim(d, m, bones, ai, with_scale=True, absent=absent,with_euler=True)
+        eulers=[[e[3] for e in fr] for fr in frames]
         # bone scale goes into the SMD's optional scale columns, only for animations
         # that use it (STUDIO_HAS_SCALE), so other exports stay plain studiomdl SMD
-        scales = [[e[2] for e in fr] for fr in frames] if a['flags'] & 0x20000 else None
+        # Missing tracks default to the bind scale, including the tiny non-unit
+        # scales in some retail ships with no HAS_SCALE flag.
+        scales = [[e[2] for e in fr] for fr in frames] if a['flags'] & 0x20000 or any(v != 1 for b in bones for v in b['scale']) else None
         frames = [[(e[0], e[1]) for e in fr] for fr in frames]
         delta = bool(a['flags'] & 4)
         fms = decode_frame_movement(d, m, ai, range(len(frames)))
@@ -1224,7 +1313,7 @@ def decompile(path, outdir):
                 if static:
                     row.append(((0, 0, 0), (0, 0, 0)))
                 else:
-                    row.append(local_frame_to_smd(bi, pos, rm, root_fix=not delta))
+                    row.append(local_frame_to_smd(bi, pos, rm, root_fix=not delta,angles=eulers[fi][bi]))
                 if scales is not None:
                     row[-1] = tuple(row[-1]) + (scales[fi][bi],)
             skel.append(row)
@@ -1234,6 +1323,10 @@ def decompile(path, outdir):
             opts.append('loop noforceloop')
         if a['flags'] & 2:
             opts.append('snap')
+        for mi in range(a['nummovements']):
+            ao = h['localanimindex'] + ai * 0x5C
+            record = struct.unpack_from('<2i9f', d, ao + a['movementindex'] + 44 * mi)
+            opts.append('movementrecord %d %d %s' % (record[0], record[1], ' '.join('%.9g' % v for v in record[2:])))
         if fm_file:
             opts.append('fmtrack "%s"' % fm_file)
         if delta:
@@ -1260,15 +1353,10 @@ def decompile(path, outdir):
         qc.append('$node "%s"' % nm)
     if h['localNodeUnk']:
         qc.append('$localnodeunk %d' % h['localNodeUnk'])
-    # an explicit hull ($bbox) when it is not sequence 0's box (or not zero without sequences)
+    # Always retain the header hull, even when it equals sequence 0: the native
+    # triangle-collision mesh can extend beyond it and must not enlarge it.
     hull = list(h['hull_min']) + list(h['hull_max'])
-    if h['numlocalseq']:
-        s0 = mdl53.u(mdl53.SEQDESC_FIELDS, d, h['localseqindex'])
-        derived = list(s0['bbmin']) + list(s0['bbmax'])
-    else:
-        derived = [0.0] * 6
-    if hull != derived:
-        qc.append('$bbox %s' % ' '.join('%.9g' % v for v in hull))
+    qc.append('$bbox %s' % ' '.join('%.9g' % v for v in hull))
     for si in range(h['numlocalseq']):
         o = h['localseqindex'] + si * 0xE8
         s = mdl53.u(mdl53.SEQDESC_FIELDS, d, o)
@@ -1386,20 +1474,37 @@ def decompile(path, outdir):
         for blk in re.findall(r'solid\s*\{([^}]*)\}', text):
             kv = dict(re.findall(r'"([^"]+)"\s+"([^"]*)"', blk))
             solid_names.append(kv.get('name', ''))
+        solid_properties = [dict(re.findall(r'"([^"]+)"\s+"([^"]*)"', blk))
+                            for blk in re.findall(r'\bsolid\s*\{([^}]*)\}', text)]
+        if len(solid_properties) != len(p['solids']): raise ValueError('PHY solid metadata count differs from surface count')
         # bind-pose world transforms
         world = []
         for i, b in enumerate(bones):
             lm = angle_matrix(b['rot'])
+            for r in range(3):
+                for c in range(3): lm[r][c] *= b['scale'][c]
             for k in range(3):
                 lm[k][3] = b['pos'][k]
             world.append(concat(world[b['parent']], lm) if b['parent'] >= 0 else lm)
+        rigid_to_source=ROT_M90
+        if not static and not jointed:
+            # Rigid collision is posed by animation 0 frame 0, which can differ
+            # from the bind pose (notably world weapons). Undo that pose before
+            # importing the collision mesh in the bind skeleton's space.
+            pose0=decode_anim(d,m,bones,0,[0],with_scale=True)[2][0][0] if h['numlocalanim'] else None
+            if pose0:
+                pos,rm,scale=pose0
+                am=[[rm[r][c]*scale[c] for c in range(3)]+[pos[r]] for r in range(3)]
+                rigid_to_source=concat(world[0],inverse_affine(am))
+            else:rigid_to_source=angle_matrix((0,0,0))
         # The map-collision block holds each piece's faces as the source mesh's polygons
         # (in the same solid space as the PHY points); with it the physics mesh is
         # written as DMX polygons, so the compiler rebuilds the same faces.
-        block = collision_block_faces(d, h, bones)
+        block = collision_block_faces(d, h, bones,with_planes=True)
         unused_entries = list(range(len(block)))
         polygons = []
         polygon_pieces = []
+        stored_collision_planes=[]
         loose_points = []
         piece_id = 0
         all_matched = bool(block)
@@ -1424,9 +1529,9 @@ def decompile(path, outdir):
                     if jointed:
                         pt = transform(world[bone], pt)
                         normal = rotate(world[bone], normal)
-                    elif static:
-                        pt = rotate(ROT_M90, pt)
-                        normal = rotate(ROT_M90, normal)
+                    else:
+                        pt = transform(rigid_to_source, pt)
+                        normal = rotate(rigid_to_source, normal)
                     return pt, normal
                 for t in L['tris']:
                     tri = []
@@ -1437,17 +1542,27 @@ def decompile(path, outdir):
                 # the block entry with this piece's vertices supplies its polygons
                 piece_pts = [pts[i] for i in sorted({e['start'] for t in L['tris'] for e in t['edges']})]
                 match = None
-                for k in unused_entries:
+                for k in sorted(unused_entries,key=lambda k:abs(len(block[k][0])-len(piece_pts))):
                     verts = block[k][0]
-                    if len(verts) == len(piece_pts) and all(
-                            min(math.dist(v, q2) for q2 in piece_pts) < 1e-3 for v in verts):
+                    same_bounds=all(abs(fn(v[c] for v in verts)-fn(v[c] for v in piece_pts))<1e-3
+                                    for c in range(3) for fn in (min,max))
+                    if len(verts)>=len(piece_pts) and same_bounds and all(
+                            min(math.dist(v, q2) for v in verts)<1e-3 for q2 in piece_pts):
                         match = k
                         break
                 if match is None:
                     all_matched = False
                     continue
                 unused_entries.remove(match)
-                verts, faces = block[match]
+                verts, faces, planes = block[match]
+                point_ids=sorted({e['start'] for t in L['tris'] for e in t['edges']})
+                local_ids={original:i for i,original in enumerate(point_ids)}
+                stored_triangles=[]
+                for t in L['tris']:
+                    flags=(t['is_virtual']<<3)|sum(e['virtual']<<i for i,e in enumerate(t['edges']))
+                    stored_triangles.append(tuple(local_ids[e['start']] for e in t['edges'])+
+                                            (t['tri_index'],t['pierce_index'],t['material'],flags))
+                stored_collision_planes.append((len(polygons),len(faces),planes,[s['points'][i][:3] for i in point_ids],stored_triangles))
                 # one normal per piece (as for the SMD path): the compiler separates
                 # pieces by position and normal, so pieces that touch stay apart
                 placed = [corner(v) for v in verts]
@@ -1458,7 +1573,7 @@ def decompile(path, outdir):
                 used = {vi for loop in faces for vi in loop}
                 loose_points.extend((placed[vi][0], [(bone, 1.0)], piece_id) for vi in range(len(verts)) if vi not in used)
                 piece_id += 1
-        skel = [[(b['pos'], b['rot']) for b in bones]] if not static else [[((0, 0, 0), (0, 0, 0)) for b in bones]]
+        skel = [[(b['pos'], b['rot'], b['scale']) for b in bones]] if not static else [[((0, 0, 0), (0, 0, 0)) for b in bones]]
         if all_matched:
             physics_file = base + '_physics.dmx'
             # joints listed in retail's solid order, which the compiler builds solids in
@@ -1472,7 +1587,7 @@ def decompile(path, outdir):
                     i = bones[i]['parent']
                 order += reversed(chain)
             write_dmx_mesh(os.path.join(outdir, physics_file), bones, skel[0], polygons, pieces=polygon_pieces,
-                           loose=loose_points, joint_order=order)
+                           loose=loose_points, joint_order=order,collision_planes=stored_collision_planes)
         else:
             physics_file = base + '_physics.smd'
             write_smd(os.path.join(outdir, physics_file), bones, skel, tris)
@@ -1481,6 +1596,18 @@ def decompile(path, outdir):
         lines = ['%s "%s"\n{' % (cmd, physics_file)]
         if mass:
             lines.append('\t$mass %s' % mass.group(1))
+        if not jointed:
+            lines.append('\t$collisionname "%s"' % solid_names[0])
+        lines.append('\t$explicitjointconstraints')
+        for si, (surface, props) in enumerate(zip(p['solids'],solid_properties)):
+            name=solid_names[si]
+            for field,command in (('mass','jointmass'),('damping','jointdamping'),('rotdamping','jointrotdamping'),
+                                   ('inertia','jointinertia'),('massbias','jointmassbias'),('drag','jointdrag')):
+                if field in props:lines.append('\t$%s "%s" %s'%(command,name,props[field]))
+            lines.append('\t$jointsurfaceprop "%s" "%s"'%(name,props['surfaceprop']))
+            if jointed:lines.append('\t$jointparent "%s" "%s"'%(name,props.get('parent','')))
+            values=(*surface['mass_center'],*surface['rot_inertia'],*surface['drag'],surface['upper_limit_radius'],float(props['volume']))
+            lines.append('\t$ivpsurface "%s" %s'%(name,' '.join('%.9g'%v for v in values)))
         if '"concave" "1"' in text:
             lines.append('\t$concave')
         # retail models built without the map-collision block (collisionOffset 0)
@@ -1496,8 +1623,18 @@ def decompile(path, outdir):
             child = solid_names[int(kv['child'])]
             for ax in 'xyz':
                 lines.append('\t$jointconstrain "%s" %s limit %s %s %s' % (child, ax, kv[ax + 'min'], kv[ax + 'max'], kv[ax + 'friction']))
+        for pair in re.findall(r'"collisionpair"\s+"(\d+),(\d+)"',text):
+            lines.append('\t$jointcollide "%s" "%s"'%(solid_names[int(pair[0])],solid_names[int(pair[1])]))
+        if re.search(r'"selfcollisions"\s+"0"',text):lines.append('\t$noselfcollisions')
+        af=re.search(r'animatedfriction\s*\{([^}]*)\}',text)
+        if af:
+            props=dict(re.findall(r'"([^"]+)"\s+"([^"]*)"',af[1]))
+            lines.append('\t$animatedfriction '+' '.join(props[k] for k in
+                ('animfrictionmin','animfrictionmax','animfrictiontimein','animfrictiontimehold','animfrictiontimeout')))
         lines.append('}')
         qc.append('\n'.join(lines))
+        breaks=re.findall(r'\bbreak\s*\{([^}]*)\}',text)
+        if breaks:qc.append('$collisiontext\n{\n'+'\n'.join('break\n{\n'+b+'\n}' for b in breaks)+'\n}')
 
     qcpath = os.path.join(outdir, base + '.qc')
     with open(qcpath, 'w', newline='\n') as f:

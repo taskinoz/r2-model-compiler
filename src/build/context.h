@@ -40,9 +40,11 @@ struct GBone {
     int flags = 0;
     bool preDefined = false, preAligned = false, dontCollapse = false;
     Mat3x4 rawLocal, rawLocalOriginal;
+    RadianEuler rawRotation;
     Mat3x4 boneToPose;
     Mat3x4 srcRealign;
     Vec3 pos;
+    Vec3 scale{1, 1, 1};
     RadianEuler rot;
     Vec3 posscale, rotscale;
     Quat qAlignment;

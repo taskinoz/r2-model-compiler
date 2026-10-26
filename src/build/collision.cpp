@@ -48,6 +48,9 @@ struct Solid {
     float damping = 0, rotdamping = 0, inertia = 1, massBias = 1, drag = -1;
     float mass = 1;
     std::string surfaceProp;
+    const QcCollisionJoint* stored = nullptr;
+    bool forcedCenter = false;
+    DVec3 center;
 };
 
 // ---------------------------------------------------------------------------
@@ -55,6 +58,7 @@ struct Solid {
 // ---------------------------------------------------------------------------
 
 struct IvpPiece {
+    std::shared_ptr<SrcCollisionPlanes> stored;
     std::vector<int> pointIdx;               // hull vertex -> global point index
     std::vector<std::array<int, 3>> tris;    // hull triangles (hull vertex indices)
     DVec3 center;                            // AABB centre of the piece (IVP)
@@ -67,9 +71,10 @@ struct TreeNode {
 
 std::vector<uint8_t> BuildLedge(const std::vector<DVec3>& points, const std::vector<int>& pidx,
                                 const std::vector<std::array<int, 3>>& tris, int clientOrNode, bool hasChildren,
-                                int pointOffsetFromLedge) {
+                                int pointOffsetFromLedge, const SrcCollisionPlanes* stored=nullptr) {
     Buffer b;
     int ntri = static_cast<int>(tris.size());
+    if (ntri>4095) Fatal("physics convex piece exceeds the 4095-triangle format limit");
     b.I32(pointOffsetFromLedge);
     b.I32(clientOrNode);
     uint32_t size16 = static_cast<uint32_t>((16 + 16 * ntri) / 16);
@@ -115,6 +120,11 @@ std::vector<uint8_t> BuildLedge(const std::vector<DVec3>& points, const std::vec
             }
         }
         uint32_t tb = (static_cast<uint32_t>(t) & 0xFFF) | ((static_cast<uint32_t>(pierce) & 0xFFF) << 12);
+        if (stored) {
+            auto& source=stored->triangles[t];
+            tb=static_cast<uint32_t>(source[3]) | (static_cast<uint32_t>(source[4])<<12) |
+               (static_cast<uint32_t>(source[5])<<24) | (static_cast<uint32_t>((source[6]>>3)&1)<<31);
+        }
         b.U32(tb);
         for (int e = 0; e < 3; e++) {
             int a = tris[t][e], bb = tris[t][(e + 1) % 3];
@@ -122,6 +132,7 @@ std::vector<uint8_t> BuildLedge(const std::vector<DVec3>& points, const std::vec
             auto it = edgeSlot.find({bb, a});
             int opp = it == edgeSlot.end() ? 0 : it->second - self;
             uint32_t eb = (static_cast<uint32_t>(pidx[a]) & 0xFFFF) | ((static_cast<uint32_t>(opp) & 0x7FFF) << 16);
+            if (stored) eb|=static_cast<uint32_t>((stored->triangles[t][6]>>e)&1)<<31;
             b.U32(eb);
         }
     }
@@ -140,14 +151,48 @@ std::vector<uint8_t> BuildCompactSurface(const Solid& s, DVec3& dragOut) {
         Hull ih;
         ih.valid = true;
         ih.tris = h.tris;
-        for (auto& v : h.verts) {
-            DVec3 iv = ToIVP(v);
+        bool storedGeometry=h.storedPiece && !h.storedPiece->triangles.empty();
+        std::vector<DVec3> input;
+        if (storedGeometry) for (auto& v : h.storedPiece->verticesIVP) input.emplace_back(v);
+        else for (auto& v : h.verts) input.emplace_back(ToIVP(v).F());
+        for (auto& iv : input) {
             p.pointIdx.push_back(static_cast<int>(points.size()));
             points.push_back(iv);
             ih.verts.push_back(iv);
         }
+        if (storedGeometry) {
+            ih.tris.clear();
+            for (auto& t : h.storedPiece->triangles) ih.tris.push_back({t[0],t[1],t[2]});
+        }
+        // Converting inches to float32 metres can rotate a very skinny face's
+        // normal enough to cut through its own convex piece. Retriangulate on
+        // the actual serialized point grid when that happens, retaining the full
+        // original point pool (including source surface points).
+        bool convex = true;
+        for (auto& t : ih.tris) {
+            auto& a = ih.verts[t[0]];
+            DVec3 n = DCross(ih.verts[t[1]]-a,ih.verts[t[2]]-a);
+            double length = DLen(n);
+            if (length == 0) { convex = false; break; }
+            for (auto& v : ih.verts)
+                if (DDot(n,v-a) > length*1e-5) { convex = false; break; }
+        }
+        if (!convex && !storedGeometry) {
+            Hull serialized = ConvexHull(ih.verts);
+            if (!serialized.valid) Fatal("collision solid '%s' degenerates at PHY float precision",s.name.c_str());
+            ih.tris.clear();
+            std::vector<int> ids;
+            for (auto& v : serialized.verts) {
+                auto it = std::find_if(ih.verts.begin(),ih.verts.end(),[&](const DVec3& q) { return q.x==v.x && q.y==v.y && q.z==v.z; });
+                ids.push_back(static_cast<int>(it-ih.verts.begin()));
+            }
+            for (auto& t : serialized.tris) ih.tris.push_back({ids[t[0]],ids[t[1]],ids[t[2]]});
+        }
         // IVP point indices are 16-bit
-        p.tris = h.tris;
+        if (storedGeometry) {
+            p.stored=h.storedPiece;
+        }
+        p.tris = ih.tris;
         DVec3 mn = ih.verts[0], mx = ih.verts[0];
         for (auto& v : ih.verts) {
             mn = DVec3(std::min(mn.x, v.x), std::min(mn.y, v.y), std::min(mn.z, v.z));
@@ -169,6 +214,7 @@ std::vector<uint8_t> BuildCompactSurface(const Solid& s, DVec3& dragOut) {
         C = C + mp.back().center * mp.back().volume;
     }
     if (V > 0) C = C * (1.0 / V);
+    if (s.forcedCenter) C = s.center;
     double I[3] = {0, 0, 0};
     for (size_t i = 0; i < mp.size(); i++) {
         DVec3 dd = mp[i].center - C;
@@ -179,7 +225,7 @@ std::vector<uint8_t> BuildCompactSurface(const Solid& s, DVec3& dragOut) {
     for (auto& p : points) ulr = std::max(ulr, DLen(p - C));
 
     // drag fractions: share of each axis-aligned bounding face covered by the shape
-    {
+    if (!s.stored || !s.stored->storedSurface) {
         DVec3 mn = points[0], mx = points[0];
         for (auto& p : points) {
             mn = DVec3(std::min(mn.x, p.x), std::min(mn.y, p.y), std::min(mn.z, p.z));
@@ -230,6 +276,15 @@ std::vector<uint8_t> BuildCompactSurface(const Solid& s, DVec3& dragOut) {
             frac[axis] = static_cast<double>(hit) / (N * N);
         }
         dragOut = DVec3(frac[0], frac[1], frac[2]);
+    }
+    if (s.stored && s.stored->storedSurface) {
+        C = DVec3(s.stored->storedCenter);
+        dragOut = DVec3(s.stored->storedDrag);
+        ulr = s.stored->storedRadius;
+        for (int k = 0; k < 3; k++) I[k] = s.stored->storedInertia[k] * V;
+        for (auto& p : points)
+            if (DLen(p-C) > ulr + 1e-5 + ulr*1e-5)
+                Fatal("stored IVP radius for '%s' does not enclose its mesh; remove $ivpsurface after editing geometry", s.name.c_str());
     }
 
     // ledge tree over pieces
@@ -311,7 +366,7 @@ std::vector<uint8_t> BuildCompactSurface(const Solid& s, DVec3& dragOut) {
     b.PatchI32(44, 0x53505649);  // "IVPS"
     for (size_t i = 0; i < pieces.size(); i++) {
         auto led = BuildLedge(points, pieces[i].pointIdx, pieces[i].tris, s.clientData, false,
-                              static_cast<int>(pointsOff - ledgeOff[i]));
+                              static_cast<int>(pointsOff - ledgeOff[i]),pieces[i].stored.get());
         b.Append(led);
     }
     if (rootHull) {
@@ -475,6 +530,10 @@ std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int
             if (l > 0) n = n * (1 / l);
             double d = -1e300;
             for (int v : loop) d = std::max(d, DDot(n, h.verts[v]));
+            if (!h.storedBrushPlanes.empty()) {
+                const auto& plane=h.storedBrushPlanes[f];
+                n=DVec3(plane.x,plane.y,plane.z);d=plane.w;
+            }
             fs.push_back({n, d, {}, static_cast<int>(f), DVec3()});
             for (size_t k = 0; k < loop.size(); k++) loopFace[{loop[k], loop[(k + 1) % loop.size()]}] = static_cast<int>(f);
         }
@@ -506,7 +565,13 @@ std::vector<uint8_t> BuildBrushPiece(const Hull& h, int& faces, int& bevels, int
         out.F32(static_cast<float>(f.n.z));
         out.F32(static_cast<float>(f.d));
     }
-    for (auto& e : es) {
+    if (!h.storedBrushPlanes.empty()) {
+        bevels=static_cast<int>(h.storedBrushPlanes.size())-faces;
+        for (size_t i=faces;i<h.storedBrushPlanes.size();i++) {
+            const auto& p=h.storedBrushPlanes[i];
+            out.F32(p.x);out.F32(p.y);out.F32(p.z);out.F32(p.w);
+        }
+    } else for (auto& e : es) {
         if (DDot(fs[e.s0].n, fs[e.s1].n) >= kBevelDot) continue;
         bevels++;
         DVec3 n = fs[e.s0].n + fs[e.s1].n;
@@ -647,14 +712,16 @@ using PointKey = std::array<double, 3>;
 struct PointPolygons {
     std::map<PointKey, std::set<int>> byPoint;
     std::map<int, std::set<PointKey>> points;
+    std::map<int,std::shared_ptr<SrcCollisionPlanes>> planeGroups;
     bool empty() const { return byPoint.empty(); }
 };
 
-void AddPolygonPoint(PointPolygons& map, const Vec3& p, int polygon) {
+void AddPolygonPoint(PointPolygons& map, const Vec3& p, int polygon, const std::shared_ptr<SrcCollisionPlanes>& planes={}) {
     if (polygon < 0) return;
     PointKey k{static_cast<double>(p.x), static_cast<double>(p.y), static_cast<double>(p.z)};
     map.byPoint[k].insert(polygon);
     map.points[polygon].insert(k);
+    if (planes) map.planeGroups[planes->firstPolygon]=planes;
 }
 
 // Tags each hull triangle with the source polygon all three of its corners belong to,
@@ -689,6 +756,7 @@ void BuildPolygonBrush(Hull& h, const PointPolygons& index) {
         if (it != index.byPoint.end()) candidates.insert(it->second.begin(), it->second.end());
     }
     std::vector<std::vector<int>> loops;
+    std::vector<int> loopPolygons;
     double area = 0;
     for (int p : candidates) {
         std::vector<int> loop;
@@ -717,6 +785,7 @@ void BuildPolygonBrush(Hull& h, const PointPolygons& index) {
         for (size_t k = 1; k + 1 < loop.size(); k++)
             area += DLen(DCross(h.verts[loop[k]] - h.verts[loop[0]], h.verts[loop[k + 1]] - h.verts[loop[0]])) / 2;
         loops.push_back(loop);
+        loopPolygons.push_back(p);
     }
     if (loops.empty() || std::fabs(area - hullArea) > 1e-3 * std::max(1.0, hullArea)) {
         Verbose("collision piece: source polygons cover %.4f of %.4f surface; faces follow the hull", area, hullArea);
@@ -755,6 +824,12 @@ void BuildPolygonBrush(Hull& h, const PointPolygons& index) {
         if (!directed.count({e.second, e.first})) open++;
     if (open) Verbose("collision piece: %d polygon edges have no opposite edge (a face that touches itself)", open);
     h.brushLoops = std::move(loops);
+    for (auto& [first,stored] : index.planeGroups) {
+        if (static_cast<size_t>(stored->faceCount)!=loopPolygons.size()) continue;
+        bool same=true;
+        for (size_t i=0;i<loopPolygons.size();i++) if (loopPolygons[i]!=first+static_cast<int>(i)) same=false;
+        if (same) { h.storedBrushPlanes=stored->planes;h.storedPiece=stored;break; }
+    }
 }
 
 void TagPolygons(Hull& h, const PointPolygons& index) {
@@ -898,7 +973,7 @@ void BuildCollisionModel(BuildContext& ctx) {
         for (auto& f : inst->faces) faces.push_back({f.v[0], f.v[1], f.v[2]});
         PointPolygons polygons;
         for (auto& f : inst->faces)
-            for (int c = 0; c < 3; c++) AddPolygonPoint(polygons, world[f.v[c]], f.polygon);
+            for (int c = 0; c < 3; c++) AddPolygonPoint(polygons, world[f.v[c]], f.polygon,f.collisionPlanes);
         std::vector<PointPolygons> pieceIndex;  // per piece: its own source polygons
         Solid s;
         s.name = FileBase(qc.file);
@@ -924,7 +999,7 @@ void BuildCollisionModel(BuildContext& ctx) {
                 PointPolygons own;
                 for (auto& f : inst->faces)
                     if (members.count(f.v[0]) && members.count(f.v[1]) && members.count(f.v[2]))
-                        for (int k = 0; k < 3; k++) AddPolygonPoint(own, world[f.v[k]], f.polygon);
+                        for (int k = 0; k < 3; k++) AddPolygonPoint(own, world[f.v[k]], f.polygon,f.collisionPlanes);
                 pieceIndex.push_back(own);
             }
             if (static_cast<int>(s.pieces.size()) > qc.maxConvexPieces) {
@@ -997,7 +1072,7 @@ void BuildCollisionModel(BuildContext& ctx) {
             PointPolygons polygons;
             for (auto& f : inst->faces)
                 if (verts.count(f.v[0]) && verts.count(f.v[1]) && verts.count(f.v[2]))
-                    for (int c = 0; c < 3; c++) AddPolygonPoint(polygons, Transform(inv, inst->gverts[f.v[c]].pos), f.polygon);
+                    for (int c = 0; c < 3; c++) AddPolygonPoint(polygons, Transform(inv, inst->gverts[f.v[c]].pos), f.polygon,f.collisionPlanes);
             std::vector<PointPolygons> pieceIndex;  // per piece: its own source polygons
             Solid s;
             s.name = bones[gb].name;
@@ -1026,6 +1101,7 @@ void BuildCollisionModel(BuildContext& ctx) {
                         s.pieces.push_back(h);
                         std::set<int> members(comp.begin(), comp.end());
                         PointPolygons own;
+                        own.planeGroups=polygons.planeGroups;
                         for (size_t k = 0; k < fl.size(); k++)
                             if (members.count(fl[k][0]) && members.count(fl[k][1]) && members.count(fl[k][2]))
                                 for (int c = 0; c < 3; c++) AddPolygonPoint(own, pts[fl[k][c]], flPolygon[k]);
@@ -1079,18 +1155,25 @@ void BuildCollisionModel(BuildContext& ctx) {
         if (solids.empty()) Fatal("collision joints produced no solids");
     }
 
+    if (!qc.joints && !qc.solidName.empty() && !solids.empty()) solids[0].name = qc.solidName;
     // per-solid properties
     for (auto& s : solids) {
         s.damping = qc.damping;
         s.rotdamping = qc.rotdamping;
         s.inertia = qc.inertia;
         s.drag = qc.drag;
+        if (qc.hasMassCenter && !qc.joints) { s.forcedCenter = true; s.center = ToIVP(DVec3(qc.massCenter)); }
+        bool explicitRotDamping = qc.explicitRotDamping;
         for (auto& jp : qc.jointProps)
             if (IEquals(jp.name, s.name)) {
+                s.stored = &jp;
                 if (jp.damping >= 0) s.damping = jp.damping;
-                if (jp.rotdamping >= 0) s.rotdamping = jp.rotdamping;
-                if (jp.inertia >= 0) s.inertia = jp.inertia;
+                if (jp.rotdamping >= 0) { s.rotdamping = jp.rotdamping; explicitRotDamping = true; }
+                if (jp.inertiaSet) s.inertia = jp.inertia;
                 if (jp.massBias >= 0) s.massBias = jp.massBias;
+                if (jp.drag >= 0) s.drag = jp.drag;
+                if (!jp.surfaceProp.empty()) s.surfaceProp = jp.surfaceProp;
+                if (jp.parentSet) s.parent = jp.parent;
             }
         for (auto& h : s.pieces) {
             MassProps m = ComputeMassProps(h);
@@ -1109,10 +1192,26 @@ void BuildCollisionModel(BuildContext& ctx) {
         double sz[3] = {size.x, size.y, size.z};
         sz[largest] = 0;
         double len = std::sqrt(sz[0] * sz[0] + sz[1] * sz[1] + sz[2] * sz[2]);
-        if (len > 0 && size[largest] / len > 9) s.rotdamping = 1.0f;
+        if (!explicitRotDamping && len > 0 && size[largest] / len > 9) s.rotdamping = 1.0f;
     }
     double totalVolume = 0;
+    for (auto& solid : solids) {
+        std::set<std::string> chain;
+        const Solid* current = &solid;
+        while (!current->parent.empty()) {
+            // Retail Titans can identify the root solid as its own parent.
+            // This terminates the physical hierarchy; longer cycles are invalid.
+            if (IEquals(current->name,current->parent)) break;
+            if (!chain.insert(current->name).second) Fatal("cyclic physics joint parents");
+            const Solid* parent = nullptr;
+            for (auto& candidate : solids) if (IEquals(candidate.name,current->parent)) parent = &candidate;
+            if (!parent) Fatal("unknown physics parent '%s'", current->parent.c_str());
+            current = parent;
+        }
+    }
     for (auto& s : solids) totalVolume += s.volume;
+    double weightedVolume = 0;
+    for (auto& s : solids) weightedVolume += s.volume * s.massBias;
     if (totalVolume <= 0) totalVolume = 1;
     double totalMass = qc.mass;
     if (totalMass < 0 || qc.automass) {
@@ -1121,8 +1220,9 @@ void BuildCollisionModel(BuildContext& ctx) {
         Info("Computed mass: %.2f kg", totalMass);
     }
     for (auto& s : solids) {
-        s.mass = static_cast<float>(((s.volume * s.massBias) / totalVolume) * totalMass);
+        s.mass = static_cast<float>(((s.volume * s.massBias) / (weightedVolume > 0 ? weightedVolume : totalVolume)) * totalMass);
         if (s.mass < 1.0f) s.mass = 1.0f;
+        if (s.stored && s.stored->mass >= 0) s.mass = s.stored->mass;
     }
 
     // physics bone indices
@@ -1171,7 +1271,7 @@ void BuildCollisionModel(BuildContext& ctx) {
         KeyFloat(text, "rotdamping", s.rotdamping);
         if (s.drag != -1) KeyFloat(text, "drag", s.drag);
         KeyFloat(text, "inertia", s.inertia);
-        KeyFloat(text, "volume", static_cast<float>(s.volume));
+        KeyFloat(text, "volume", s.stored && s.stored->storedSurface ? s.stored->storedVolume : static_cast<float>(s.volume));
         if (s.massBias != 1.0f) KeyFloat(text, "massbias", s.massBias);
         text += "}\n";
     }
@@ -1183,6 +1283,8 @@ void BuildCollisionModel(BuildContext& ctx) {
     for (size_t i = 0; i < solids.size(); i++) {
         auto& s = solids[i];
         if (s.parent.empty()) continue;
+        if (qc.explicitConstraints && std::none_of(qc.constraints.begin(),qc.constraints.end(),
+                [&](const QcJointConstraint& c) { return IEquals(c.joint,s.name); })) continue;
         int parent = solidIndex(s.parent);
         if (parent < 0 || parent == static_cast<int>(i)) continue;
         float mn[3] = {0, 0, 0}, mx[3] = {0, 0, 0}, fr[3] = {0, 0, 0};

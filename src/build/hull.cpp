@@ -148,7 +148,7 @@ Hull ConvexHull(const std::vector<DVec3>& input) {
             // The outside-point tolerance must not clip the visible region:
             // leaving a slightly visible neighbour creates overlapping faces
             // along the horizon on nearly coplanar float-transformed meshes.
-            if (faces[f].alive && distance(static_cast<int>(f), p) > size * 1e-12)
+            if (faces[f].alive && distance(static_cast<int>(f), p) > 0)
                 visible.push_back(static_cast<int>(f));
         std::vector<char> isVis(faces.size(), 0);
         for (int f : visible) isVis[f] = 1;
@@ -193,6 +193,12 @@ Hull ConvexHull(const std::vector<DVec3>& input) {
         out.tris.push_back(t);
     }
     out.valid = out.tris.size() >= 4;
+    std::map<uint64_t,int> edges;
+    for (auto& t : out.tris)
+        for (int e = 0; e < 3; e++) ++edges[EdgeKey(t[e],t[(e+1)%3])];
+    for (auto& t : out.tris)
+        for (int e = 0; e < 3; e++)
+            if (edges[EdgeKey(t[e],t[(e+1)%3])] != 1 || edges[EdgeKey(t[(e+1)%3],t[e])] != 1) out.valid = false;
     return out;
 }
 

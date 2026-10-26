@@ -4,6 +4,7 @@
 #pragma once
 
 #include <memory>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -45,12 +46,22 @@ struct SrcVertex {
     bool hasTangent = false;
     Vec4 tangent;
     int sourceId = -1;  // DMX r2c_vertex_id: corners with different ids never merge
+    bool modelSpace = false;  // explicit final model-space coordinates; no bind remap
+};
+
+struct SrcCollisionPlanes {
+    int firstPolygon = 0, faceCount = 0;
+    std::vector<Vec4> planes;  // final solid-local face planes, then bevel planes
+    std::vector<Vec3> verticesIVP;
+    // vertex indices, triangle index, pierce index, material, virtual-bit mask
+    std::vector<std::array<int,7>> triangles;
 };
 
 struct SrcFace {
     int material = 0;  // index into Source::materials
     int v[3] = {0, 0, 0};  // indices into Source::vertices
     int polygon = -1;      // source polygon (a DMX face) the triangle belongs to; -1 for SMD
+    std::shared_ptr<SrcCollisionPlanes> collisionPlanes;
 };
 
 // A mesh vertex no triangle uses (DMX face set flagged r2c_vertices_only): retail

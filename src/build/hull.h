@@ -2,11 +2,13 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <vector>
 
 #include "core/math.h"
 
 namespace r2c {
+struct SrcCollisionPlanes;
 
 struct DVec3 {
     double x = 0, y = 0, z = 0;
@@ -32,6 +34,8 @@ struct Hull {
     // map-collision faces built straight from the source polygons (vertex loops,
     // counter-clockwise seen from outside) when they cover the hull; empty otherwise
     std::vector<std::vector<int>> brushLoops;
+    std::vector<Vec4> storedBrushPlanes;  // explicit source planes, face order follows brushLoops
+    std::shared_ptr<SrcCollisionPlanes> storedPiece;
     bool valid = false;
 };
 

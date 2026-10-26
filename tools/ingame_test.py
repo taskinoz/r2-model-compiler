@@ -11,6 +11,7 @@ TITANFALL2_DIR environment variable.
 """
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
@@ -61,6 +62,8 @@ void function R2C_SpawnThread( entity player )
             int seq = prop.LookupSequence( "%SEQ%" )
             if ( %MOTION% )
                 thread R2C_Motion( prop, m, pos, < 0, player.EyeAngles().y + 180, 0 > )
+            else if ( %NO_ANIMATION% )
+                printl( "[R2C] animation deliberately skipped on " + m )
             else if ( seq >= 0 && !%PHYSICS% )
             {
                 prop.Anim_Play( "%SEQ%" )
@@ -226,6 +229,7 @@ def main():
                     "(origin, yaw and --probe-attachment at 0/25/50/75/95%% of each)")
     ap.add_argument("--shot-delay", type=float, default=12)
     ap.add_argument("--keep-open", action="store_true")
+    ap.add_argument("--no-animation", action="store_true", help="precache and spawn without requesting a sequence (for viewmodel checks)")
     ap.add_argument("--report", help="write a JSON validation report")
     ap.add_argument("--extra-file", action="append", default=[], metavar="LOCAL=GAMEPATH",
                     help="also mount a non-model file in the test mod (for example a weapon script)")
@@ -235,6 +239,7 @@ def main():
         ap.error("pass --game or set TITANFALL2_DIR to the Titanfall 2 folder")
     if a.npc and a.physics:
         ap.error('--npc and --physics are mutually exclusive')
+    if a.no_animation and a.motion:ap.error('--no-animation and --motion are mutually exclusive')
 
     prof = os.path.join(a.game, a.profile)
     mods = os.path.join(prof, "mods")
@@ -251,7 +256,7 @@ def main():
     if os.path.isdir(mod):
         shutil.rmtree(mod)
     os.makedirs(os.path.join(mod, "mod", "scripts", "vscripts"))
-    precache = []
+    precache = []; model_hashes = {}
     for spec in a.models:
         if "=" in spec:
             local, gamepath = spec.split("=", 1)
@@ -260,6 +265,7 @@ def main():
         dst = os.path.join(mod, "mod", gamepath)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(local, dst)
+        with open(dst,'rb') as mounted:model_hashes[gamepath]=hashlib.sha256(mounted.read()).hexdigest()
         precache.append('    file.models.append( $"%s" )\n    PrecacheModel( $"%s" )' % (gamepath, gamepath))
     for spec in a.extra_file:
         local, gamepath = spec.split("=", 1)
@@ -269,6 +275,7 @@ def main():
     sv = SERVER_SCRIPT.replace("%PRECACHE%", "\n".join(precache)).replace("%DIST%", str(a.dist)) \
         .replace("%SPACING%", str(a.spacing)).replace("%SEQ%", a.sequence)
     sv = sv.replace("%LATERAL%", str(a.lateral))
+    sv = sv.replace("%NO_ANIMATION%", 'true' if a.no_animation else 'false')
     motion_seqs = [s for s in a.motion.split(',') if s]
     sv = sv.replace("%MOTION_SEQS%", ', '.join('"%s"' % s for s in motion_seqs)) \
         .replace("%MOTION%", 'true' if motion_seqs else 'false')
@@ -366,7 +373,8 @@ def main():
     report = {'success': not failures, 'failures': failures, 'spawns': spawns, 'motion': motion, 'probes': probes,
               'physics_drop': drops, 'attachment_motion': [float(value) for value in
               re.findall(r'\[R2C\] attachment motion=([-+\d.eE]+)', log_text)],
-              'logs': new_logs, 'screenshots': new_shots, 'models': a.models}
+              'logs': new_logs, 'screenshots': new_shots, 'models': a.models,'models_sha256':model_hashes,
+              'animation_deliberately_skipped':a.no_animation}
     if a.report:
         with open(a.report, 'w') as output: json.dump(report, output, indent=2)
     print('validation:', 'FAILED: ' + '; '.join(failures) if failures else 'passed')

@@ -20,7 +20,8 @@ IK rules, procedural bones and weapon UI panels.
 - Static props, physics props (collision hulls, PHY, ragdolls, the map-collision block)
   and skinned, animated models with LODs, hitboxes, attachments and skins.
 - SMD and DMX input (binary DMX 1-5 and 9, keyvalues2), including Blender Source
-  Tools output.
+  Tools output. Positive skinning weights are retained, up to the format's three
+  influences per vertex.
 - A studiomdl-style command line (`-game`, `-nop4`, `-verbose`, `-nox360`), so Crowbar
   can use it as its compiler.
 - Respawn animation data:
@@ -35,10 +36,12 @@ IK rules, procedural bones and weapon UI panels.
 - Bone followers (`$bonefollower`) for animated props with moving collision, vertex
   colours and a second UV set (from DMX).
 
-All 602 retail multiplayer models and 3,422 unique single-player models decompile and
-recompile with it, and all 4,024 match every compared summary field, collision
-included. This comparison samples animation frames; detailed field differences
-remain. See [VALIDATION.md](VALIDATION.md) for the evidence, limits and in-game checks.
+All 602 retail multiplayer models and 3,422 unique single-player models decompile,
+compile and pass full-frame validation: 1.74 million animation frames, 211.67 million
+bone poses, render/skin data and collision geometry. The build also passes 62
+regressions and representative Northstar runtime checks. See
+[VALIDATION.md](VALIDATION.md) for the measured coverage, tolerances and remaining
+binary-layout differences.
 
 ## Quick start
 
@@ -71,7 +74,8 @@ them from a QC as you would for Source. The animated example was made this way.
 
 ## QC reference: Respawn additions
 
-Everything else follows Valve's studiomdl. These additions cover Titanfall 2 data.
+Common commands follow Valve's studiomdl conventions. These additions cover
+Titanfall 2 data; the tested scope is recorded in VALIDATION.md.
 
 ### Root motion
 
@@ -228,6 +232,43 @@ Without the attribute, tangents are computed from the UVs as before.
 These commands set values retail models store that plain QC cannot express. The
 decompiler writes them when a model needs them.
 
+- `$definebone ... scale x y z`: positive, finite local bind scale, after the
+  usual position, rotation and optional six alignment values. DMX bind transforms
+  also retain scale. SMD skeleton rows may append scale xyz after rotation xyz.
+- `$generatedhitboxes`: retain the generated flag alongside explicit `$hbox` data.
+- `$boneusage "bone" mask`, `$respawnflag 0|1`, `$zerounusedlods`, and
+  `$modelsource "mesh.dmx" "logical/name"`: retain exact usage bits, header flag 0x800000,
+  zeroed unused VVD LOD counts, and logical mesh names respectively.
+  Bodygroup `blankname "logical/name"` retains the name of an empty model entry.
+  Remove retained `$boneusage` values when editing bone use, so normal propagation
+  can include newly added attachments or meshes.
+- `$pertricollision 0|2` selects the retail triangle-collision variant.
+  `$pertrimesh "mesh.pertri"` retains exact quantized collision geometry while the
+  compiler constructs a new acceleration tree. Remove it after editing the render
+  mesh to regenerate collision. The text format is `r2c_pertri 1`, six bounds
+  (minimum xyz then maximum xyz), vertex/triangle counts, uint16 xyz vertex rows,
+  then triangle rows `a b c surfaceProperty` with zero-based indices.
+  Decompiled QCs also retain an explicit `$bbox`: the header hull can intentionally
+  differ from the triangle-collision bounds. Remove it when new source geometry
+  should determine the hull bounds.
+- Animation `movementrecord endFrame flags v0 v1 angle vx vy vz px py pz` retains
+  one legacy movement record. Records must be ordered and end within the animation.
+- Inside collision blocks, `$jointmass`, `$jointdrag`, `$jointsurfaceprop`, and
+  `$jointparent` set one solid's mass, drag, material, and physical parent.
+  `$collisionname` retains a rigid solid's logical name. `$explicitjointconstraints`
+  emits only explicitly constrained joints, preserving parents without constraints.
+- Collision `$ivpsurface "solid" cx cy cz ix iy iz dx dy dz radius volume` retains
+  the original IVP mass center, normalized inertia, drag axes and bounding radius
+  (IVP units), plus volume in cubic inches. Remove this and retained `$jointmass`
+  values after editing a physics mesh so the compiler recomputes its properties.
+  A retained radius that no longer encloses the mesh is rejected.
+- Decompiled collision DMX carries `r2c_collision_planes` groups in its bind vertex
+  data. Each group retains the source polygon range, literal face/bevel planes,
+  and the native float32 IVP points and oriented triangles. The compiler rebuilds
+  edge links and acceleration trees. Remove these groups when editing a physics
+  mesh to regenerate its surfaces; retained native triangulation does not follow
+  edits to the visible DMX polygons. Invalid indices or open surfaces are rejected.
+
 - `$mass <kg>` at the top level: the header mass of a model without physics (inside a
   collision block, `$mass` keeps its usual meaning).
 - `$contents <number>`: the exact contents mask (names such as `grate` still work).
@@ -248,6 +289,13 @@ decompiler writes them when a model needs them.
 - DMX `r2c_vertex_id` (int per corner): corners with different ids never become one
   vertex. Decompiled meshes carry retail's vertex numbers this way, so vertices retail
   kept apart stay apart even when identical in every attribute.
+- DMX bind vertex data `r2c_model_space` (bool): coordinates and supplied normals
+  and tangents are already in final model space. The compiler remaps bone indices
+  but skips bind-pose deformation and the static-prop default rotation. The
+  decompiler uses this to preserve native vertex floats, with
+  `flipVCoordinates = false` and stored UV/UV2 values. Ordinary Blender exports
+  follow the usual source-space import rules. Remove this marker if you want a
+  changed bind skeleton to deform the source mesh during compilation.
 - `$keyvalues` may appear more than once; each block is stored as its own
   `mdlkeyvalue` text, as retail does.
 - `$bonerotscale "bone" x y z` and animation `posscale "bone" step` retain the
@@ -262,6 +310,31 @@ decompiler writes them when a model needs them.
   The decompiler emits both options together. After editing an animation, remove
   `errors` and `storedtarget` to recompute IK, and remove `fmtrack` and use `rm` if
   root motion should be extracted again. Retained data does not follow source edits.
+
+## Decompile and validate
+
+The package includes Python tools requiring Python 3.10 or later and its standard
+library. NumPy, if already installed, accelerates full-frame comparisons; it is optional.
+
+```powershell
+python tools\decompile53.py original.mdl exported
+.\r2studiomdl.exe -o rebuilt.mdl exported\original.qc
+python tools\validate53.py rebuilt.mdl --against original.mdl --report validation.json
+python tools\roundtrip.py --compiler .\r2studiomdl.exe --jobs 8 --discard-sources --out test-output\fresh path\to\models
+python tools\validate_corpus.py --report test-output\fresh\results.json --out test-output\dense --jobs 8
+```
+
+`validate53.py` checks binary structure, bone weights and transforms, triangle-tree
+reachability and bounds, every animation frame, all material slots across skins and
+LODs, collision geometry, and physics properties and constraints. The comparison
+uses explicit tolerances recorded in its corpus manifest. A failed validation exits
+nonzero. `--against` permits deliberately distinct render/collision meshes; standalone
+validation normally also checks render-triangle coverage (`--allow-custom-collision`
+disables that check). See VALIDATION.md for measured coverage and remaining limits.
+
+`--discard-sources` keeps rebuilt MDLs and reports but removes generated exports
+after each model. It only cleans work directories marked as owned by that run.
+Both corpus tools checkpoint results; `--resume` requires unchanged inputs and tools.
 
 ## Building from source
 
@@ -323,8 +396,8 @@ collects the v53 format facts the compiler relies on.
 
 - Output targets Titanfall 2 v53 only. Titanfall 1 and Apex Legends model files are not
   inputs; the compiler reads QC/SMD/DMX.
-- The summary comparison samples first, middle and last animation frames. Detailed
-  retail differences, including one model's bind-pose scale, remain in VALIDATION.md.
+- Validation covers the tested retail corpus and representative runtime cases.
+  Remaining binary-layout differences and coverage limits are in VALIDATION.md.
 - Crowbar's command line is reproduced in a test, but its GUI has not been driven
   automatically.
 

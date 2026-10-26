@@ -125,6 +125,7 @@ Mat3x4 Invert(const Mat3x4& m);
 
 Mat3x4 AngleMatrix(const RadianEuler& a);
 Mat3x4 AngleMatrix(const RadianEuler& a, const Vec3& pos);
+Mat3x4 AngleMatrix(const RadianEuler& a, const Vec3& pos, const Vec3& scale);
 RadianEuler MatrixAngles(const Mat3x4& m);
 Quat AngleQuaternion(const RadianEuler& a);
 RadianEuler QuaternionAngles(const Quat& q);

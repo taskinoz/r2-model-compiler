@@ -7,6 +7,7 @@
 #include <map>
 #include <random>
 #include <stdexcept>
+#include <string>
 
 using namespace r2c;
 
@@ -18,7 +19,7 @@ void CheckHull(const std::vector<DVec3>& points, double volume) {
     Hull hull = ConvexHull(points);
     Check(hull.valid, "expected a valid hull");
     double actual = ComputeMassProps(hull).volume;
-    if (std::fabs(actual - volume) > volume * 1e-5) {
+    if (volume >= 0 && std::fabs(actual - volume) > volume * 1e-5) {
         std::cerr << "volume: " << actual << ", expected: " << volume << '\n';
         Check(false, "incorrect collision volume");
     }
@@ -51,10 +52,10 @@ int main(int argc, char** argv) {
             std::vector<DVec3> points;
             DVec3 p;
             while (fixture >> p.x >> p.y >> p.z) points.push_back(p);
-            Check(points.size() == 24, "missing cylinder regression fixture");
+            Check(argc > 2 ? points.size() >= 4 : points.size() == 24, "missing hull regression fixture");
             for (int order = 0; order < 30; ++order) {
                 std::shuffle(points.begin(), points.end(), random);
-                CheckHull(points, 12288);
+                CheckHull(points, argc > 2 ? std::stod(argv[2]) : 12288);
             }
         }
         // Blender's twelve-sided cylinder: area 192, height 64. Float transforms
@@ -74,6 +75,33 @@ int main(int argc, char** argv) {
             for (int order = 0; order < 30; ++order) {
                 std::shuffle(cylinder.begin(), cylinder.end(), random);
                 CheckHull(cylinder, 12288 * scale * scale * scale);
+            }
+        }
+        // A rounded-ended prism with nearly coplanar, float-transformed caps.
+        // Visibility must include the complete horizon even below the input
+        // welding tolerance; every order must produce a closed convex surface.
+        std::vector<DVec3> profile{{0,-16,0},{0,16,0}};
+        for (int i = 0; i <= 8; i++) {
+            double a = std::acos(-1.0) * (.5 + i / 8.0);
+            profile.emplace_back(-48 + 16*std::cos(a),16*std::sin(a),0);
+        }
+        double area = 0;
+        for (size_t i = 0; i < profile.size(); i++) {
+            auto& a = profile[i]; auto& b = profile[(i+1)%profile.size()];
+            area += (a.x*b.y-b.x*a.y)/2;
+        }
+        for (double tilt : {-1e-6, 0., 1e-6}) {
+            std::vector<DVec3> prism;
+            for (auto& p : profile)
+                for (double z : {0.,64.}) {
+                    double x = p.x + 80, h = z + .05;
+                    prism.emplace_back(static_cast<float>(std::cos(tilt)*x+std::sin(tilt)*h),
+                                       static_cast<float>(p.y-25),
+                                       static_cast<float>(-std::sin(tilt)*x+std::cos(tilt)*h));
+                }
+            for (int order = 0; order < 30; order++) {
+                std::shuffle(prism.begin(),prism.end(),random);
+                CheckHull(prism,area*64);
             }
         }
         std::vector<DVec3> cube;

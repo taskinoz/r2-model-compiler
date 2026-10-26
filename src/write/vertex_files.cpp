@@ -63,8 +63,6 @@ void LodCounts(const std::vector<Fixup>& fixups, int out[kMaxLods]) {
     for (int l = 0; l < kMaxLods; l++) out[l] = 0;
     for (auto& f : fixups)
         for (int l = 0; l <= f.lod && l < kMaxLods; l++) out[l] = std::max(out[l], f.start + f.count);
-    for (int l = 1; l < kMaxLods; l++)
-        if (out[l] == 0) out[l] = out[l - 1];
 }
 
 }  // namespace
@@ -84,6 +82,10 @@ static void HeaderLodCounts(const CompiledModel& m, const std::vector<Fixup>& fi
         LodCounts(m, out);
     else
         LodCounts(fixups, out);
+    // An active LOD may be completely culled. Only slots outside the LOD table
+    // repeat the last count; filling a real zero LOD resurrects lower-LOD vertices.
+    for (int l = m.numLods; l < kMaxLods; l++)
+        out[l] = m.zeroUnusedLods ? 0 : out[m.numLods-1];
 }
 
 std::vector<uint8_t> WriteVVD(const CompiledModel& m, int checksum) {
